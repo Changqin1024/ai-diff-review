@@ -1,0 +1,287 @@
+{
+  "name": "ai-diff-review",
+  "displayName": "AI 审查（AI Diff Review）",
+  "description": "对 AI 编码智能体（opencode、Cursor、Claude Code、Trae 等）产生的文件改动进行人工审查：逐块接受、逐块拒绝，或部分应用。",
+  "version": "0.1.0",
+  "publisher": "changqin",
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Changqin1024/ai-diff-review.git"
+  },
+  "homepage": "https://github.com/Changqin1024/ai-diff-review#readme",
+  "bugs": {
+    "url": "https://github.com/Changqin1024/ai-diff-review/issues"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "SCM Providers"
+  ],
+  "keywords": [
+    "diff",
+    "review",
+    "opencode",
+    "cursor",
+    "claude",
+    "agent"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "AI 审查",
+      "properties": {
+        "aiReview.autoCheckpoint": {
+          "type": "boolean",
+          "default": true,
+          "description": "扩展激活时自动建立基线检查点（仅在尚不存在检查点时）。"
+        },
+        "aiReview.baselineFromGit": {
+          "type": "boolean",
+          "default": false,
+          "description": "建立检查点时，对已跟踪文件使用 git HEAD 内容作为基线。这样已有的未提交改动（包括建立检查点之前的 外部修改）也会进入审查。"
+        },
+        "aiReview.ignore": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/.git/**",
+            "**/node_modules/**",
+            "**/.vscode-test/**",
+            "**/out/**",
+            "**/dist/**",
+            "**/build/**",
+            "**/.ai-review/**",
+            "**/*.vsix",
+            "**/*.lock",
+            "**/package-lock.json",
+            "**/yarn.lock",
+            "**/pnpm-lock.yaml"
+          ],
+          "description": "不纳入审查的 glob 模式（相对于各工作区根目录）。"
+        },
+        "aiReview.maxTextFileKB": {
+          "type": "number",
+          "default": 4096,
+          "description": "超过此大小的文本文件仍会被跟踪，但不做逐块 diff，只能按文件接受/拒绝。"
+        },
+        "aiReview.showStatusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "在状态栏显示待审查改动数量。"
+        },
+        "aiReview.debounceMs": {
+          "type": "number",
+          "default": 150,
+          "description": "评估文件改动前的防抖延迟（毫秒）。"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "aiReview.createCheckpoint",
+        "title": "创建检查点",
+        "category": "AI 审查",
+        "icon": "$(save)"
+      },
+      {
+        "command": "aiReview.openReview",
+        "title": "打开审查面板",
+        "category": "AI 审查",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "aiReview.refresh",
+        "title": "刷新",
+        "category": "AI 审查",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "aiReview.acceptAll",
+        "title": "全部接受",
+        "category": "AI 审查",
+        "icon": "$(check-all)"
+      },
+      {
+        "command": "aiReview.rejectAll",
+        "title": "全部拒绝",
+        "category": "AI 审查",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "aiReview.acceptFile",
+        "title": "接受当前文件",
+        "category": "AI 审查",
+        "icon": "$(check)"
+      },
+      {
+        "command": "aiReview.rejectFile",
+        "title": "拒绝当前文件",
+        "category": "AI 审查",
+        "icon": "$(close)"
+      },
+      {
+        "command": "aiReview.acceptHunk",
+        "title": "接受此改动",
+        "category": "AI 审查",
+        "icon": "$(check)"
+      },
+      {
+        "command": "aiReview.rejectHunk",
+        "title": "拒绝此改动",
+        "category": "AI 审查",
+        "icon": "$(close)"
+      },
+      {
+        "command": "aiReview.openDiff",
+        "title": "打开原生对比",
+        "category": "AI 审查",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "aiReview.revealFile",
+        "title": "在资源管理器中显示",
+        "category": "AI 审查",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "aiReview.reset",
+        "title": "重置检查点（以当前内容作为新基线）",
+        "category": "AI 审查",
+        "icon": "$(debug-restart)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "aiReview",
+          "title": "AI 审查",
+          "icon": "media/activity-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "aiReview": [
+        {
+          "id": "aiReview.changes",
+          "name": "待审查改动"
+        },
+        {
+          "id": "aiReview.globalActions",
+          "name": "全局操作",
+          "type": "webview"
+        }
+      ]
+    },
+    "menus": {
+      "editor/title": [
+        {
+          "command": "aiReview.acceptFile",
+          "when": "aiReview.activeDiff",
+          "group": "navigation@1"
+        },
+        {
+          "command": "aiReview.rejectFile",
+          "when": "aiReview.activeDiff",
+          "group": "navigation@2"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "aiReview.createCheckpoint",
+          "when": "view == aiReview.changes",
+          "group": "navigation@1"
+        },
+        {
+          "command": "aiReview.openReview",
+          "when": "view == aiReview.changes && aiReview.hasChanges",
+          "group": "navigation@2"
+        },
+        {
+          "command": "aiReview.refresh",
+          "when": "view == aiReview.changes",
+          "group": "navigation@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "aiReview.acceptFile",
+          "when": "view == aiReview.changes && viewItem == changeFile",
+          "group": "inline@1"
+        },
+        {
+          "command": "aiReview.rejectFile",
+          "when": "view == aiReview.changes && viewItem == changeFile",
+          "group": "inline@2"
+        },
+        {
+          "command": "aiReview.openDiff",
+          "when": "view == aiReview.changes && viewItem == changeFile",
+          "group": "inline@3"
+        },
+        {
+          "command": "aiReview.acceptHunk",
+          "when": "view == aiReview.changes && viewItem == changeHunk",
+          "group": "inline@1"
+        },
+        {
+          "command": "aiReview.rejectHunk",
+          "when": "view == aiReview.changes && viewItem == changeHunk",
+          "group": "inline@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "aiReview.acceptHunk",
+          "when": "false"
+        },
+        {
+          "command": "aiReview.rejectHunk",
+          "when": "false"
+        },
+        {
+          "command": "aiReview.acceptFile",
+          "when": "false"
+        },
+        {
+          "command": "aiReview.rejectFile",
+          "when": "false"
+        },
+        {
+          "command": "aiReview.revealFile",
+          "when": "false"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "tsc -p ./ --noEmit",
+    "test": "npm run compile && node ./out/test/runTest.js",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "diff": "^5.2.0"
+  },
+  "devDependencies": {
+    "@types/diff": "^5.2.1",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^20.14.0",
+    "@types/vscode": "~1.85.0",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.2.1",
+    "glob": "^11.1.0",
+    "mocha": "^10.8.2",
+    "typescript": "^5.5.4"
+  }
+}

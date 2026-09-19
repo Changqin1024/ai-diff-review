@@ -1,14 +1,22 @@
 import * as vscode from 'vscode';
 import { ReviewController } from '../reviewController';
 import { ChangeTracker } from '../changeTracker';
-import { DiffHunk, FileChangeView } from '../types';
 import { hunkRangeLabel } from '../diffEngine';
-import { dirname } from '../util';
+import { DiffHunk, FileChangeView } from '../types';
+
+export interface FolderNode {
+  kind: 'folder';
+  id: string;
+  name: string;
+  relPath: string;
+  children: ReviewNode[];
+}
 
 export interface FileNode {
   kind: 'file';
   key: string;
   view: FileChangeView;
+  children: HunkNode[];
 }
 
 export interface HunkNode {
@@ -17,9 +25,10 @@ export interface HunkNode {
   hunkIndex: number;
   view: FileChangeView;
   hunk: DiffHunk;
+  children: [];
 }
 
-export type ReviewNode = FileNode | HunkNode;
+export type ReviewNode = FolderNode | FileNode | HunkNode;
 
 function statusIcon(status: FileChangeView['status']): vscode.ThemeIcon {
   switch (status) {
@@ -32,22 +41,108 @@ function statusIcon(status: FileChangeView['status']): vscode.ThemeIcon {
   }
 }
 
+interface FolderSummary {
+  files: number;
+  additions: number;
+  deletions: number;
+}
+
+function summarize(node: ReviewNode): FolderSummary {
+  if (node.kind === 'file') {
+    return { files: 1, additions: node.view.additions, deletions: node.view.deletions };
+  }
+  if (node.kind === 'hunk') {
+    return { files: 0, additions: 0, deletions: 0 };
+  }
+  const total: FolderSummary = { files: 0, additions: 0, deletions: 0 };
+  for (const child of node.children) {
+    const s = summarize(child);
+    total.files += s.files;
+    total.additions += s.additions;
+    total.deletions += s.deletions;
+  }
+  return total;
+}
+
+/** Folders before files, then alphabetical (numeric-aware). */
+function sortNodes(nodes: ReviewNode[]): void {
+  nodes.sort((a, b) => {
+    const aFolder = a.kind === 'folder' ? 0 : 1;
+    const bFolder = b.kind === 'folder' ? 0 : 1;
+    if (aFolder !== bFolder) {
+      return aFolder - bFolder;
+    }
+    const an = a.kind === 'file' ? a.view.fileName : a.kind === 'folder' ? a.name : '';
+    const bn = b.kind === 'file' ? b.view.fileName : b.kind === 'folder' ? b.name : '';
+    return an.localeCompare(bn, undefined, { numeric: true, sensitivity: 'base' });
+  });
+  for (const node of nodes) {
+    if (node.kind === 'folder') {
+      sortNodes(node.children);
+    }
+  }
+}
+
 export class ChangesTreeProvider implements vscode.TreeDataProvider<ReviewNode> {
   private readonly _onDidChangeTreeData = new vscode.EventEmitter<ReviewNode | undefined | void>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+
+  private roots: ReviewNode[] = [];
 
   constructor(
     private readonly controller: ReviewController,
     private readonly tracker: ChangeTracker
   ) {
     this.tracker.onDidChange(() => this.refresh());
+    this.rebuild();
   }
 
   refresh(): void {
+    this.rebuild();
     this._onDidChangeTreeData.fire();
   }
 
+  /** Group pending files into a folder tree: folder → file → change region. */
+  private rebuild(): void {
+    const root: FolderNode = { kind: 'folder', id: 'folder:', name: '', relPath: '', children: [] };
+
+    for (const view of this.controller.getViews()) {
+      const parts = view.relativePath.split('/').filter((p) => p.length > 0);
+      parts.pop(); // drop the file name; remaining parts are folders
+
+      const hunks: HunkNode[] = view.hunks.map((hunk) => ({
+        kind: 'hunk',
+        key: view.key,
+        hunkIndex: hunk.index,
+        view,
+        hunk,
+        children: [],
+      }));
+      const fileNode: FileNode = { kind: 'file', key: view.key, view, children: hunks };
+
+      let cursor = root;
+      for (const part of parts) {
+        let folder = cursor.children.find(
+          (c): c is FolderNode => c.kind === 'folder' && c.name === part
+        );
+        if (!folder) {
+          const relPath = cursor.relPath ? `${cursor.relPath}/${part}` : part;
+          folder = { kind: 'folder', id: `folder:${relPath}`, name: part, relPath, children: [] };
+          cursor.children.push(folder);
+        }
+        cursor = folder;
+      }
+      cursor.children.push(fileNode);
+    }
+
+    sortNodes(root.children);
+    this.roots = root.children;
+  }
+
   getTreeItem(element: ReviewNode): vscode.TreeItem {
+    if (element.kind === 'folder') {
+      return this.folderItem(element);
+    }
     if (element.kind === 'file') {
       return this.fileItem(element);
     }
@@ -56,28 +151,30 @@ export class ChangesTreeProvider implements vscode.TreeDataProvider<ReviewNode> 
 
   getChildren(element?: ReviewNode): ReviewNode[] {
     if (!element) {
-      return this.controller.getViews().map((view) => ({ kind: 'file' as const, key: view.key, view }));
+      return this.roots;
     }
-    if (element.kind === 'file') {
-      return element.view.hunks.map((hunk) => ({
-        kind: 'hunk' as const,
-        key: element.key,
-        hunkIndex: hunk.index,
-        view: element.view,
-        hunk,
-      }));
-    }
-    return [];
+    return element.children;
+  }
+
+  private folderItem(node: FolderNode): vscode.TreeItem {
+    const item = new vscode.TreeItem(node.name, vscode.TreeItemCollapsibleState.Expanded);
+    item.id = node.id;
+    const summary = summarize(node);
+    item.description = `${summary.files} 个文件  +${summary.additions} −${summary.deletions}`;
+    item.iconPath = vscode.ThemeIcon.Folder;
+    item.contextValue = 'changeFolder';
+    item.tooltip = new vscode.MarkdownString(
+      `**${node.relPath}/**\n\n${summary.files} 个文件  \`+${summary.additions} −${summary.deletions}\``
+    );
+    return item;
   }
 
   private fileItem(node: FileNode): vscode.TreeItem {
     const { view } = node;
     const item = new vscode.TreeItem(view.fileName, vscode.TreeItemCollapsibleState.Expanded);
-    const dir = dirname(view.relativePath);
-    const counts = `+${view.additions} −${view.deletions}`;
-    item.description = dir ? `${dir}  ${counts}` : counts;
+    item.description = `+${view.additions} −${view.deletions}`;
     item.tooltip = new vscode.MarkdownString(
-      `**${view.relativePath}**\n\n状态：\`${view.status}\`  \`${counts}\``
+      `**${view.relativePath}**\n\n状态：\`${view.status}\`  \`+${view.additions} −${view.deletions}\``
     );
     item.iconPath = statusIcon(view.status);
     item.contextValue = 'changeFile';

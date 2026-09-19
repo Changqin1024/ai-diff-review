@@ -209,6 +209,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         await controller.reveal(key);
       }
     }),
+    vscode.commands.registerCommand('aiReview.openFile', async (arg: unknown) => {
+      const key = keyOf(arg);
+      if (!key) {
+        return;
+      }
+      let line: number | undefined;
+      if (arg && typeof arg === 'object') {
+        const hunk = (arg as { hunk?: { newStart?: number } }).hunk;
+        if (hunk && typeof hunk.newStart === 'number') {
+          line = hunk.newStart;
+        }
+      }
+      await controller.openFile(key, line);
+    }),
     tracker.onDidChange(() => updateStatus()),
     vscode.window.onDidChangeActiveTextEditor(() => updateActiveDiffContext())
   );

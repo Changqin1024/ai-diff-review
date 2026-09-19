@@ -147,10 +147,16 @@
         "icon": "$(diff)"
       },
       {
+        "command": "aiReview.openFile",
+        "title": "打开文件",
+        "category": "AI 审查",
+        "icon": "$(go-to-file)"
+      },
+      {
         "command": "aiReview.revealFile",
         "title": "在资源管理器中显示",
         "category": "AI 审查",
-        "icon": "$(go-to-file)"
+        "icon": "$(folder-opened)"
       },
       {
         "command": "aiReview.reset",
@@ -228,6 +234,21 @@
           "group": "inline@3"
         },
         {
+          "command": "aiReview.openFile",
+          "when": "view == aiReview.changes && viewItem == changeFile",
+          "group": "1_open@1"
+        },
+        {
+          "command": "aiReview.revealFile",
+          "when": "view == aiReview.changes && viewItem == changeFile",
+          "group": "1_open@2"
+        },
+        {
+          "command": "aiReview.openDiff",
+          "when": "view == aiReview.changes && viewItem == changeFile",
+          "group": "1_open@3"
+        },
+        {
           "command": "aiReview.acceptHunk",
           "when": "view == aiReview.changes && viewItem == changeHunk",
           "group": "inline@1"
@@ -236,6 +257,11 @@
           "command": "aiReview.rejectHunk",
           "when": "view == aiReview.changes && viewItem == changeHunk",
           "group": "inline@2"
+        },
+        {
+          "command": "aiReview.openFile",
+          "when": "view == aiReview.changes && viewItem == changeHunk",
+          "group": "1_open@1"
         }
       ],
       "commandPalette": [
@@ -257,6 +283,10 @@
         },
         {
           "command": "aiReview.revealFile",
+          "when": "false"
+        },
+        {
+          "command": "aiReview.openFile",
           "when": "false"
         }
       ]

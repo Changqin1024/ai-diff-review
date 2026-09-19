@@ -247,12 +247,26 @@ export class ReviewController {
     );
   }
 
-  async reveal(key: string): Promise<void> {
-    const change = this.tracker.getByKey(key);
-    if (!change) {
-      return;
+  /** Open the real working file in the editor (optionally at a given line). */
+  async openFile(key: string, line?: number): Promise<void> {
+    const uri = vscode.Uri.parse(key);
+    try {
+      const document = await vscode.window.showTextDocument(uri, { preview: false });
+      if (line !== undefined && line > 0) {
+        const position = new vscode.Position(Math.max(0, line - 1), 0);
+        document.selection = new vscode.Selection(position, position);
+        document.revealRange(
+          new vscode.Range(position, position),
+          vscode.TextEditorRevealType.InCenterIfOutsideViewport
+        );
+      }
+    } catch {
+      void vscode.window.showInformationMessage(`无法打开文件：${uri.fsPath}`);
     }
-    await vscode.commands.executeCommand('revealInExplorer', vscode.Uri.parse(change.key));
+  }
+
+  async reveal(key: string): Promise<void> {
+    await vscode.commands.executeCommand('revealInExplorer', vscode.Uri.parse(key));
   }
 
   private async deleteFile(uri: vscode.Uri): Promise<void> {

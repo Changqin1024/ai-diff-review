@@ -9,9 +9,9 @@
    - Organization：`All accessible organizations`
    - Scopes：`Custom defined` → 勾选 **Marketplace → Manage**
    - 生成后立即复制 token（只显示一次）。PAT 有效期最长 1 年，过期需重新生成。
-3. 编辑 `package.json`：
-   - 把 `"publisher": "local"` 改成你的发布者 ID；
-   - 建议补全 `"repository"`、`"homepage"`、`"bugs"`；
+3. 检查 `package.json`：
+   - `"publisher"` 必须是你的发布者 ID（本项目当前为 `changqin`，换账号时改这里）；
+   - `"repository"` / `"homepage"` / `"bugs"` 已指向 GitHub 仓库；
    - `"icon": "media/icon.png"`（128×128 PNG，市场与扩展列表会显示它）。
 
 > ⚠️ 上架后**不要改** `publisher` 或 `name`（包名），否则市场会视为新扩展，用户会装出两个（侧边栏会出现两个图标）。

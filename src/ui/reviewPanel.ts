@@ -253,8 +253,8 @@ export class ReviewPanel {
   <main id="files"></main>
   <div id="empty" class="empty hidden">
     <p id="empty-title">没有待审查的改动。</p>
-    <p class="hint">扩展会自动建立检查点。让 智能体修改文件，或先执行
-    <code>AI 审查: 创建检查点</code> 再开始修改。</p>
+    <p class="hint">扩展会自动记录基线。让 智能体修改文件，或先执行
+    <code>AI 审查: 记录基线</code> 再开始修改。</p>
   </div>
 </div>
 <script nonce="${nonce}" src="${jsUri}"></script>

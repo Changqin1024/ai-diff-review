@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
 import { BaselineStore } from './baselineStore';
 import { FileChange } from './types';
-import { bytesEqual, decodeText, isProbablyBinary, matchesAny, relativePathOf } from './util';
+import { bytesEqual, decodeText, isProbablyBinary, relativePathOf } from './util';
+import { getWatchSettings, isExcluded, isIncluded } from './settings';
 
 /**
  * Watches the workspace for external file mutations (e.g. an code agent writing
@@ -16,6 +17,11 @@ export class ChangeTracker implements vscode.Disposable {
   private readonly _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChange = this._onDidChange.event;
 
+  private readonly _onDidStructure = new vscode.EventEmitter<void>();
+  /** Fired (debounced) when files/folders are created or deleted. */
+  readonly onDidStructureChange = this._onDidStructure.event;
+  private structureTimer?: ReturnType<typeof setTimeout>;
+
   constructor(private readonly store: BaselineStore) {}
 
   /** Suppress watcher evaluation while this extension is writing to disk. */
@@ -25,14 +31,34 @@ export class ChangeTracker implements vscode.Disposable {
     this.watcher = vscode.workspace.createFileSystemWatcher('**/*');
     this.disposables.push(
       this.watcher.onDidChange((uri) => this.schedule(uri)),
-      this.watcher.onDidCreate((uri) => this.schedule(uri)),
-      this.watcher.onDidDelete((uri) => this.schedule(uri)),
+      this.watcher.onDidCreate((uri) => {
+        this.schedule(uri);
+        this.scheduleStructure();
+      }),
+      this.watcher.onDidDelete((uri) => {
+        this.schedule(uri);
+        this.scheduleStructure();
+      }),
       vscode.workspace.onDidChangeConfiguration((e) => {
-        if (e.affectsConfiguration('aiReview.ignore') || e.affectsConfiguration('aiReview.maxTextFileKB')) {
+        if (
+          e.affectsConfiguration('aiReview.ignore') ||
+          e.affectsConfiguration('aiReview.maxTextFileKB') ||
+          e.affectsConfiguration('aiReview.watch')
+        ) {
           void this.refreshAll();
         }
       })
     );
+  }
+
+  private scheduleStructure(): void {
+    if (this.structureTimer) {
+      clearTimeout(this.structureTimer);
+    }
+    this.structureTimer = setTimeout(() => {
+      this.structureTimer = undefined;
+      this._onDidStructure.fire();
+    }, 900);
   }
 
   dispose(): void {
@@ -40,14 +66,14 @@ export class ChangeTracker implements vscode.Disposable {
       clearTimeout(t);
     }
     this.timers.clear();
+    if (this.structureTimer) {
+      clearTimeout(this.structureTimer);
+    }
+    this._onDidStructure.dispose();
     this.watcher?.dispose();
     for (const d of this.disposables) {
       d.dispose();
     }
-  }
-
-  private get ignorePatterns(): string[] {
-    return vscode.workspace.getConfiguration('aiReview').get<string[]>('ignore', []);
   }
 
   private get maxTextBytes(): number {
@@ -66,10 +92,18 @@ export class ChangeTracker implements vscode.Disposable {
     if (!folder) {
       return true;
     }
-    return matchesAny(relativePathOf(folder, uri), this.ignorePatterns);
+    const relativePath = relativePathOf(folder, uri);
+    const settings = getWatchSettings();
+    if (!isIncluded(relativePath, settings)) {
+      return true;
+    }
+    return isExcluded(relativePath, settings);
   }
 
   private schedule(uri: vscode.Uri): void {
+    if (!getWatchSettings().enabled) {
+      return;
+    }
     if (this.shouldIgnore(uri) || this.selfWrites.has(uri.toString())) {
       return;
     }
@@ -204,6 +238,10 @@ export class ChangeTracker implements vscode.Disposable {
 
   /** Re-evaluate every file in the workspace (and every stored baseline). */
   async refreshAll(): Promise<void> {
+    if (!getWatchSettings().enabled) {
+      this.clear();
+      return;
+    }
     const seen = new Set<string>();
     const folders = vscode.workspace.workspaceFolders ?? [];
     for (const folder of folders) {

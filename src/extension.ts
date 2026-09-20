@@ -7,6 +7,8 @@ import { ChangesTreeProvider } from './ui/treeProvider';
 import { ReviewPanel } from './ui/reviewPanel';
 import { AiReviewHoverProvider } from './ui/hoverProvider';
 import { GlobalActionsViewProvider } from './ui/globalActionsView';
+import { SettingsViewProvider } from './ui/settingsView';
+import { getWatchSettings } from './settings';
 
 function keyOf(arg: unknown): string | undefined {
   if (typeof arg === 'string') {
@@ -53,6 +55,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const tree = new ChangesTreeProvider(controller, tracker);
   const contentProvider = new AiReviewContentProvider(tracker, store);
   const hoverProvider = new AiReviewHoverProvider(tracker);
+  const settingsView = new SettingsViewProvider(controller);
 
   /** Real file key behind a native diff tab (either side), if it is ours. */
   const diffTabKey = (input: vscode.TabInputTextDiff): string | undefined => {
@@ -98,6 +101,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       GlobalActionsViewProvider.viewType,
       new GlobalActionsViewProvider(tracker)
     ),
+    vscode.window.registerWebviewViewProvider(SettingsViewProvider.viewType, settingsView),
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('aiReview.watch')) {
+        void settingsView.update();
+      }
+    }),
     vscode.window.registerWebviewPanelSerializer(ReviewPanel.viewType, {
       async deserializeWebviewPanel(panel): Promise<void> {
         ReviewPanel.revive(panel, context.extensionUri, controller, tracker);
@@ -146,11 +155,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.commands.registerCommand('aiReview.createCheckpoint', async () => {
       const count = await controller.createCheckpoint(true);
-      void vscode.window.setStatusBarMessage(`AI 审查：检查点已更新（新增 ${count} 个文件）。`, 4000);
+      void vscode.window.setStatusBarMessage(`AI 审查：已记录基线（新增 ${count} 个文件）。`, 4000);
     }),
     vscode.commands.registerCommand('aiReview.reset', async () => {
       const count = await controller.reset();
-      void vscode.window.setStatusBarMessage(`AI 审查：检查点已重置（${count} 个文件）。`, 4000);
+      void vscode.window.setStatusBarMessage(`AI 审查：已重置基线（${count} 个文件）。`, 4000);
     }),
     vscode.commands.registerCommand('aiReview.openReview', (arg: unknown) => {
       ReviewPanel.show(context.extensionUri, controller, tracker, keyOf(arg), hunkIndexOf(arg));
@@ -163,7 +172,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.commands.registerCommand('aiReview.rejectAll', async () => {
       const choice = await vscode.window.showWarningMessage(
-        `确定要拒绝全部 ${tracker.count} 个待审查改动，并将文件恢复到检查点吗？`,
+        `确定要拒绝全部 ${tracker.count} 个待审查改动，并将文件恢复到基线吗？`,
         { modal: true },
         '全部拒绝'
       );
@@ -223,7 +232,33 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
       await controller.openFile(key, line);
     }),
+    vscode.commands.registerCommand('aiReview.openSettings', async () => {
+      await vscode.commands.executeCommand('setContext', 'aiReview.settingsMode', true);
+      await vscode.commands.executeCommand('aiReview.settings.focus');
+    }),
+    vscode.commands.registerCommand('aiReview.exitSettings', async () => {
+      await vscode.commands.executeCommand('setContext', 'aiReview.settingsMode', false);
+      await vscode.commands.executeCommand('aiReview.changes.focus');
+    }),
+    vscode.commands.registerCommand('aiReview.clearWorkspaceCache', async () => {
+      const stats = await controller.cacheStats();
+      const choice = await vscode.window.showWarningMessage(
+        `确定要删除当前工作区的全部基线缓存吗？（${stats.files} 个文件）`,
+        { modal: true },
+        '清理'
+      );
+      if (choice === '清理') {
+        const cleared = await controller.clearWorkspaceCache();
+        void vscode.window.showInformationMessage(`AI 审查：已清理 ${cleared.files} 个文件的缓存。`);
+      }
+    }),
     tracker.onDidChange(() => updateStatus()),
+    tracker.onDidStructureChange(() => void controller.reconcile()),
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('aiReview.watch')) {
+        void controller.reconcile();
+      }
+    }),
     vscode.window.onDidChangeActiveTextEditor(() => updateActiveDiffContext())
   );
 
@@ -232,16 +267,30 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   tracker.start();
 
   const autoCheckpoint = vscode.workspace.getConfiguration('aiReview').get<boolean>('autoCheckpoint', true);
-  if (autoCheckpoint && (vscode.workspace.workspaceFolders?.length ?? 0) > 0) {
+  const watchEnabled = getWatchSettings().enabled;
+
+  const rec = await controller.reconcile();
+  if (rec.pruned > 0 || rec.remapped > 0) {
+    void vscode.window.setStatusBarMessage(
+      `AI 审查：基线已同步（清理 ${rec.pruned}，迁移 ${rec.remapped}）。`,
+      4000
+    );
+  }
+
+  if (watchEnabled && autoCheckpoint && (vscode.workspace.workspaceFolders?.length ?? 0) > 0) {
     await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Window, title: 'AI 审查：正在建立检查点…' },
+      { location: vscode.ProgressLocation.Window, title: 'AI 审查：正在记录基线…' },
       async () => {
         await controller.createCheckpoint(true);
       }
     );
   }
 
-  await tracker.refreshAll();
+  if (watchEnabled) {
+    await tracker.refreshAll();
+  } else {
+    tracker.clear();
+  }
   updateStatus();
 }
 

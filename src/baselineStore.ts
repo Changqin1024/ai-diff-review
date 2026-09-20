@@ -2,6 +2,13 @@ import * as vscode from 'vscode';
 import { isGitRepo, listTrackedFiles, showHeadFile } from './git';
 import { matchesAny, relativePathOf } from './util';
 
+export interface BaselineMeta {
+  /** Workspace folder fsPaths recorded when the baselines were captured. */
+  folders: string[];
+  /** Effective watch paths recorded when the baselines were captured. */
+  paths: string[];
+}
+
 /**
  * Stores the "baseline" (pre-change) content of tracked files, one real file
  * per workspace file, mirrored under the extension storage directory:
@@ -76,6 +83,83 @@ export class BaselineStore {
     }
   }
 
+  private get metaFile(): vscode.Uri {
+    return vscode.Uri.joinPath(this.root, 'workspace-folders.json');
+  }
+
+  /** Metadata recorded when the baselines were captured. */
+  async readMeta(): Promise<BaselineMeta | undefined> {
+    try {
+      const bytes = await vscode.workspace.fs.readFile(this.metaFile);
+      const parsed = JSON.parse(new TextDecoder().decode(bytes)) as { folders?: unknown; paths?: unknown };
+      const strings = (value: unknown): string[] =>
+        Array.isArray(value) ? value.filter((p): p is string => typeof p === 'string') : [];
+      return { folders: strings(parsed.folders), paths: strings(parsed.paths) };
+    } catch {
+      /* ignore */
+    }
+    return undefined;
+  }
+
+  async writeMeta(meta: BaselineMeta): Promise<void> {
+    try {
+      await vscode.workspace.fs.createDirectory(this.root);
+      await vscode.workspace.fs.writeFile(
+        this.metaFile,
+        new TextEncoder().encode(JSON.stringify(meta, null, 2))
+      );
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** Move a stored baseline from one workspace path to another (rename/move). */
+  async move(from: vscode.Uri, to: vscode.Uri): Promise<boolean> {
+    const bytes = await this.read(from);
+    if (!bytes) {
+      return false;
+    }
+    await this.write(to, bytes);
+    await this.delete(from);
+    return true;
+  }
+
+  /** Delete baselines whose corresponding workspace file no longer exists. */
+  async pruneMissing(): Promise<number> {
+    const uris = await this.list();
+    let removed = 0;
+    for (const uri of uris) {
+      let exists = true;
+      try {
+        await vscode.workspace.fs.stat(uri);
+      } catch {
+        exists = false;
+      }
+      if (!exists) {
+        await this.delete(uri);
+        removed++;
+      }
+    }
+    return removed;
+  }
+
+  /** Delete baselines whose workspace-relative path matches the predicate. */
+  async deleteMatching(
+    relativeOf: (uri: vscode.Uri) => string | undefined,
+    match: (relativePath: string) => boolean
+  ): Promise<number> {
+    const uris = await this.list();
+    let removed = 0;
+    for (const uri of uris) {
+      const relative = relativeOf(uri);
+      if (relative && match(relative)) {
+        await this.delete(uri);
+        removed++;
+      }
+    }
+    return removed;
+  }
+
   /** Enumerate every URI that currently has a stored baseline. */
   async list(): Promise<vscode.Uri[]> {
     const folders = vscode.workspace.workspaceFolders ?? [];
@@ -111,11 +195,16 @@ export class BaselineStore {
   }
 
   /** Capture the current state of the whole workspace as the new baseline. */
-  async snapshotWorkspace(ignore: string[], useGitBaseline: boolean, onlyMissing = false): Promise<number> {
+  async snapshotWorkspace(
+    ignore: string[],
+    useGitBaseline: boolean,
+    onlyMissing = false,
+    include?: (relativePath: string) => boolean
+  ): Promise<number> {
     const folders = vscode.workspace.workspaceFolders ?? [];
     let count = 0;
     for (const folder of folders) {
-      count += await this.snapshotFolder(folder, ignore, useGitBaseline, onlyMissing);
+      count += await this.snapshotFolder(folder, ignore, useGitBaseline, onlyMissing, include);
     }
     return count;
   }
@@ -124,7 +213,8 @@ export class BaselineStore {
     folder: vscode.WorkspaceFolder,
     ignore: string[],
     useGitBaseline: boolean,
-    onlyMissing: boolean
+    onlyMissing: boolean,
+    include?: (relativePath: string) => boolean
   ): Promise<number> {
     const files = await vscode.workspace.findFiles(new vscode.RelativePattern(folder, '**/*'));
     let count = 0;
@@ -141,6 +231,9 @@ export class BaselineStore {
     for (const file of files) {
       const rel = relativePathOf(folder, file);
       if (matchesAny(rel, ignore)) {
+        continue;
+      }
+      if (include && !include(rel)) {
         continue;
       }
       if (onlyMissing && (await this.has(file))) {
@@ -161,5 +254,34 @@ export class BaselineStore {
       count++;
     }
     return count;
+  }
+
+  /** Number of stored baseline files and their total size, for the current workspace. */
+  async stats(): Promise<{ files: number; bytes: number }> {    let files = 0;
+    let bytes = 0;
+    const walk = async (dir: vscode.Uri): Promise<void> => {
+      let entries: [string, vscode.FileType][];
+      try {
+        entries = await vscode.workspace.fs.readDirectory(dir);
+      } catch {
+        return;
+      }
+      for (const [name, type] of entries) {
+        const child = vscode.Uri.joinPath(dir, name);
+        if (type === vscode.FileType.Directory) {
+          await walk(child);
+        } else {
+          try {
+            const stat = await vscode.workspace.fs.stat(child);
+            files++;
+            bytes += stat.size;
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    };
+    await walk(this.baselineDir);
+    return { files, bytes };
   }
 }

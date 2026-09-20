@@ -37,15 +37,39 @@
     "configuration": {
       "title": "AI 审查",
       "properties": {
+        "aiReview.watch.enabled": {
+          "type": "boolean",
+          "default": true,
+          "scope": "resource",
+          "markdownDescription": "启用后，在当前工作区自动监听文件变更。（工作区级设置）"
+        },
+        "aiReview.watch.paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "resource",
+          "markdownDescription": "仅监听这些工作区内的路径（文件或文件夹，相对工作区根目录）。留空表示监听整个工作区。（工作区级设置）"
+        },
+        "aiReview.watch.exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "resource",
+          "markdownDescription": "当前工作区额外排除的路径或 glob；与全局 `#aiReview.ignore#` 互相独立、同时生效。（工作区级设置）"
+        },
         "aiReview.autoCheckpoint": {
           "type": "boolean",
           "default": true,
-          "description": "扩展激活时自动建立基线检查点（仅在尚不存在检查点时）。"
+          "description": "扩展激活时自动记录基线（仅为还没有基线的文件）。"
         },
         "aiReview.baselineFromGit": {
           "type": "boolean",
           "default": false,
-          "description": "建立检查点时，对已跟踪文件使用 git HEAD 内容作为基线。这样已有的未提交改动（包括建立检查点之前的 外部修改）也会进入审查。"
+          "description": "记录基线时，对已跟踪文件使用 git HEAD 内容作为基线。这样已有的未提交改动（包括记录基线之前的 外部修改）也会进入审查。"
         },
         "aiReview.ignore": {
           "type": "array",
@@ -88,7 +112,7 @@
     "commands": [
       {
         "command": "aiReview.createCheckpoint",
-        "title": "创建检查点",
+        "title": "记录基线",
         "category": "AI 审查",
         "icon": "$(save)"
       },
@@ -160,9 +184,27 @@
       },
       {
         "command": "aiReview.reset",
-        "title": "重置检查点（以当前内容作为新基线）",
+        "title": "重置基线（以当前内容重新开始）",
         "category": "AI 审查",
         "icon": "$(debug-restart)"
+      },
+      {
+        "command": "aiReview.openSettings",
+        "title": "设置",
+        "category": "AI 审查",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "aiReview.exitSettings",
+        "title": "返回",
+        "category": "AI 审查",
+        "icon": "$(arrow-left)"
+      },
+      {
+        "command": "aiReview.clearWorkspaceCache",
+        "title": "清理当前工作区缓存",
+        "category": "AI 审查",
+        "icon": "$(trash)"
       }
     ],
     "viewsContainers": {
@@ -178,12 +220,20 @@
       "aiReview": [
         {
           "id": "aiReview.changes",
-          "name": "待审查改动"
+          "name": "待审查改动",
+          "when": "!aiReview.settingsMode"
         },
         {
           "id": "aiReview.globalActions",
           "name": "全局操作",
-          "type": "webview"
+          "type": "webview",
+          "when": "!aiReview.settingsMode"
+        },
+        {
+          "id": "aiReview.settings",
+          "name": "设置",
+          "type": "webview",
+          "when": "aiReview.settingsMode"
         }
       ]
     },
@@ -215,6 +265,16 @@
           "command": "aiReview.refresh",
           "when": "view == aiReview.changes",
           "group": "navigation@3"
+        },
+        {
+          "command": "aiReview.openSettings",
+          "when": "view == aiReview.changes",
+          "group": "navigation@4"
+        },
+        {
+          "command": "aiReview.exitSettings",
+          "when": "view == aiReview.settings",
+          "group": "navigation@1"
         }
       ],
       "view/item/context": [
@@ -287,6 +347,14 @@
         },
         {
           "command": "aiReview.openFile",
+          "when": "false"
+        },
+        {
+          "command": "aiReview.exitSettings",
+          "when": "false"
+        },
+        {
+          "command": "aiReview.reset",
           "when": "false"
         }
       ]

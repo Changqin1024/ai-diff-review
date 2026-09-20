@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as crypto from 'crypto';
 import { BaselineStore } from './baselineStore';
 import { ChangeTracker } from './changeTracker';
 import {
@@ -8,6 +9,8 @@ import {
   rejectHunk as rejectHunkText,
 } from './diffEngine';
 import { AiReviewContentProvider } from './diffContentProvider';
+import { gitRenames } from './git';
+import { getWatchSettings, invalidatePathCache, isExcluded, isIncluded, matchesEntry } from './settings';
 import { DisplayRow, FileChange, FileChangeView, PanelFile } from './types';
 import {
   basename,
@@ -18,6 +21,20 @@ import {
   splitKeepEndings,
   stripEol,
 } from './util';
+
+function sha1(text: string): string {
+  return crypto.createHash('sha1').update(text, 'utf8').digest('hex');
+}
+
+function samePaths(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  const norm = (list: string[]): string[] => list.map((p) => p.replace(/\\/g, '/').toLowerCase()).sort();
+  const left = norm(a);
+  const right = norm(b);
+  return left.every((value, index) => value === right[index]);
+}
 
 /**
  * Applies review decisions. The mental model is simple:
@@ -217,7 +234,10 @@ export class ReviewController {
     const config = vscode.workspace.getConfiguration('aiReview');
     const ignore = config.get<string[]>('ignore', []);
     const useGit = config.get<boolean>('baselineFromGit', false);
-    const count = await this.store.snapshotWorkspace(ignore, useGit, onlyMissing);
+    const settings = getWatchSettings();
+    const include = (relativePath: string): boolean =>
+      isIncluded(relativePath, settings) && !isExcluded(relativePath, settings);
+    const count = await this.store.snapshotWorkspace(ignore, useGit, onlyMissing, include);
     await this.tracker.refreshAll();
     return count;
   }
@@ -226,6 +246,138 @@ export class ReviewController {
     await this.store.clear();
     this.tracker.clear();
     return this.createCheckpoint(false);
+  }
+
+  async setWatchExclude(entries: string[]): Promise<void> {
+    await vscode.workspace
+      .getConfiguration('aiReview')
+      .update('watch.exclude', entries, vscode.ConfigurationTarget.Workspace);
+  }
+
+  /** Delete baselines of files that are now excluded in this workspace. */
+  async pruneExcludedBaselines(): Promise<number> {
+    const settings = getWatchSettings();
+    const removed = await this.store.deleteMatching(
+      (uri) => {
+        const folder = vscode.workspace.getWorkspaceFolder(uri);
+        return folder ? relativePathOf(folder, uri) : undefined;
+      },
+      (relativePath) => settings.exclude.some((entry) => matchesEntry(relativePath, entry))
+    );
+    if (removed > 0) {
+      await this.tracker.refreshAll();
+    }
+    return removed;
+  }
+
+  /**
+   * Bring the stored baselines in sync with the current filesystem:
+   * - if the effective watch scope changed, delete out-of-scope baselines and
+   *   baseline the newly in-scope files;
+   * - remap baselines of renamed/moved files instead of deleting and rebuilding.
+   */
+  async reconcile(): Promise<{ pruned: number; remapped: number; rebaselined: boolean }> {
+    invalidatePathCache();
+    const folders = (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath);
+    const settings = getWatchSettings();
+    const meta = await this.store.readMeta();
+
+    const relativeOf = (uri: vscode.Uri): string | undefined => {
+      const folder = vscode.workspace.getWorkspaceFolder(uri);
+      return folder ? relativePathOf(folder, uri) : undefined;
+    };
+    const inScope = (relativePath: string): boolean =>
+      isIncluded(relativePath, settings) && !isExcluded(relativePath, settings);
+
+    const scopeChanged =
+      meta !== undefined && (!samePaths(meta.paths, settings.paths) || !samePaths(meta.folders, folders));
+
+    let pruned = 0;
+    if (scopeChanged) {
+      pruned = await this.store.deleteMatching(relativeOf, (relativePath) => !inScope(relativePath));
+    }
+
+    const remapped = await this.remapRenames(settings);
+
+    await this.store.writeMeta({ folders, paths: settings.paths });
+
+    if (scopeChanged) {
+      await this.createCheckpoint(true);
+    }
+
+    return { pruned, remapped, rebaselined: scopeChanged };
+  }
+
+  /** Move baselines when files were renamed/moved (git detection, then content hash). */
+  private async remapRenames(_settings: ReturnType<typeof getWatchSettings>): Promise<number> {
+    const deleted = this.tracker.all.filter((c) => c.status === 'deleted' && c.baseline.length > 0);
+    const added = this.tracker.all.filter((c) => c.status === 'added' && c.current.length > 0);
+    if (added.length === 0 || deleted.length === 0) {
+      return 0;
+    }
+
+    let moved = 0;
+
+    // 1) git rename detection (handles rename + edit via similarity)
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+      if (folder.uri.scheme !== 'file') {
+        continue;
+      }
+      const renames = await gitRenames(folder.uri.fsPath);
+      for (const rename of renames) {
+        const from = vscode.Uri.joinPath(folder.uri, ...rename.from.split('/'));
+        const to = vscode.Uri.joinPath(folder.uri, ...rename.to.split('/'));
+        if ((await this.store.has(from)) && !(await this.store.has(to))) {
+          if (await this.store.move(from, to)) {
+            moved++;
+          }
+        }
+      }
+    }
+
+    // 2) content-hash fallback from pending changes (pure rename/move)
+    if (deleted.length <= 500) {
+      const byHash = new Map<string, FileChange>();
+      for (const change of deleted) {
+        const hash = sha1(change.baseline);
+        if (!byHash.has(hash)) {
+          byHash.set(hash, change);
+        }
+      }
+      for (const change of added) {
+        const hash = sha1(change.current);
+        const source = byHash.get(hash);
+        if (!source) {
+          continue;
+        }
+        await this.store.write(vscode.Uri.parse(change.key), encodeText(source.baseline));
+        await this.store.delete(vscode.Uri.parse(source.key));
+        byHash.delete(hash);
+        moved++;
+      }
+    }
+
+    if (moved > 0) {
+      await this.tracker.refreshAll();
+    }
+    return moved;
+  }
+
+  /** Delete every stored baseline of the current workspace and empty the list. */
+  async clearWorkspaceCache(): Promise<{ files: number; bytes: number }> {
+    const stats = await this.store.stats();
+    await this.store.clear();
+    this.tracker.clear();
+    return stats;
+  }
+
+  cacheStats(): Promise<{ files: number; bytes: number }> {
+    return this.store.stats();
+  }
+
+  /** Empty the pending list without touching the stored baselines. */
+  clearPending(): void {
+    this.tracker.clear();
   }
 
   async openDiff(key: string): Promise<void> {

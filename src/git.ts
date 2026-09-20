@@ -47,3 +47,30 @@ export async function showHeadFile(cwd: string, relativePath: string): Promise<U
     );
   });
 }
+
+export interface GitRename {
+  from: string;
+  to: string;
+}
+
+/** Detect renames/moves (including content edits) from git status. */
+export async function gitRenames(cwd: string): Promise<GitRename[]> {
+  const res = await runGit(cwd, ['-c', 'core.quotepath=false', 'status', '--porcelain', '-M', '-z']);
+  if (!res.ok) {
+    return [];
+  }
+  const parts = res.stdout.split('\0').filter((s) => s.length > 0);
+  const renames: GitRename[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    const record = parts[i];
+    const status = record.slice(0, 2);
+    const target = record.slice(3);
+    if (/[RC]/.test(status)) {
+      const source = parts[++i];
+      if (source !== undefined) {
+        renames.push({ from: source.replace(/\\/g, '/'), to: target.replace(/\\/g, '/') });
+      }
+    }
+  }
+  return renames;
+}

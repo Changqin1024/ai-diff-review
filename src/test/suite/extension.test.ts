@@ -137,5 +137,23 @@ suite('AI Diff Review', () => {
     // 10) the review panel can be opened without throwing
     await vscode.commands.executeCommand('aiReview.openReview');
     await delay(400);
+
+    // 11) renaming a file moves its baseline instead of delete + rebuild
+    fs.writeFileSync(filePath, 'alpha\nRENAME_BASE\ngamma\n');
+    await delay(1200);
+    await vscode.commands.executeCommand('aiReview.acceptFile', uriString);
+    await delay(400);
+    const renamedPath = path.join(folder!.uri.fsPath, 'renamed-sample.txt');
+    fs.renameSync(filePath, renamedPath);
+    await delay(2200);
+    const renamedUriString = vscode.Uri.file(renamedPath).toString();
+    const renamedBase = await vscode.workspace.openTextDocument(virtualUri('baseline', renamedUriString));
+    assert.strictEqual(
+      normalize(renamedBase.getText()),
+      'alpha\nRENAME_BASE\ngamma\n',
+      'baseline should be moved to the renamed path'
+    );
+    fs.renameSync(renamedPath, filePath);
+    await delay(800);
   });
 });

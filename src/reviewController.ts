@@ -10,7 +10,7 @@ import {
   rejectHunk as rejectHunkText,
 } from './diffEngine';
 import { AiReviewContentProvider } from './diffContentProvider';
-import { gitRenames } from './git';
+import { gitRenames, isGitFolder } from './git';
 import { getWatchSettings, invalidatePathCache, isExcluded, isIncluded, matchesEntry } from './settings';
 import { DisplayRow, FileChange, FileChangeView, PanelFile } from './types';
 import {
@@ -400,9 +400,9 @@ export class ReviewController {
 
     let moved = 0;
 
-    // 1) git rename detection (handles rename + edit via similarity)
+    // 1) git rename detection (handles rename + edit via similarity), only for real repos
     for (const folder of vscode.workspace.workspaceFolders ?? []) {
-      if (folder.uri.scheme !== 'file') {
+      if (folder.uri.scheme !== 'file' || !isGitFolder(folder.uri.fsPath)) {
         continue;
       }
       const renames = await gitRenames(folder.uri.fsPath);

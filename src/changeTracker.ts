@@ -5,7 +5,6 @@ import { bytesEqual, isProbablyBinary, relativePathOf } from './util';
 import { decodeWith } from './encoding';
 import { resolveEncoding } from './encodingVSCode';
 import { getWatchSettings, isExcluded, isIncluded } from './settings';
-import { gitStatusPaths, isGitRepo } from './git';
 
 /**
  * Watches the workspace for external file mutations (e.g. an code agent writing
@@ -18,7 +17,6 @@ export class ChangeTracker implements vscode.Disposable {
   private watcher?: vscode.FileSystemWatcher;
 
   private versionCounter = 0;
-  private readonly repoCache = new Map<string, boolean>();
 
   private readonly _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChange = this._onDidChange.event;
@@ -38,17 +36,6 @@ export class ChangeTracker implements vscode.Disposable {
   private emit(): void {
     this.versionCounter++;
     this._onDidChange.fire();
-  }
-
-  private async isRepo(folder: vscode.WorkspaceFolder): Promise<boolean> {
-    const key = folder.uri.fsPath;
-    const cached = this.repoCache.get(key);
-    if (cached !== undefined) {
-      return cached;
-    }
-    const value = await isGitRepo(key);
-    this.repoCache.set(key, value);
-    return value;
   }
 
   /** Suppress watcher evaluation while this extension is writing to disk. */
@@ -195,6 +182,20 @@ export class ChangeTracker implements vscode.Disposable {
     const folder = vscode.workspace.getWorkspaceFolder(uri);
     const key = uri.toString();
 
+    // Fast path: if the file's size/mtime match the baselined stat, it cannot
+    // have changed — skip reading its contents entirely.
+    const recorded = await this.store.getStat(uri);
+    let stat: vscode.FileStat | undefined;
+    try {
+      stat = await vscode.workspace.fs.stat(uri);
+    } catch {
+      stat = undefined;
+    }
+    if (recorded && stat && stat.size === recorded[0] && Math.abs(stat.mtime - recorded[1]) < 1.5) {
+      this.remove(key);
+      return;
+    }
+
     const baselineBytes = await this.store.read(uri);
     let currentBytes: Uint8Array | undefined;
     try {
@@ -206,6 +207,12 @@ export class ChangeTracker implements vscode.Disposable {
     const maxBytes = this.maxTextBytes;
     const change = await this.buildChange(key, uri, folder, baselineBytes, currentBytes, maxBytes);
     if (!change) {
+      // No difference: remember the current stat so future checks are cheap.
+      if (stat) {
+        await this.store.setStat(uri, stat.size, stat.mtime);
+      } else {
+        await this.store.clearStat(uri);
+      }
       this.remove(key);
       return;
     }
@@ -272,53 +279,38 @@ export class ChangeTracker implements vscode.Disposable {
   }
 
   /**
-   * Re-evaluate meaningful files. On git repos only files reported by
-   * `git status` (plus currently pending ones) are checked, which keeps large
-   * workspaces fast; otherwise a full scan is used.
+   * Re-evaluate the workspace. Unchanged files are skipped cheaply via the
+   * size/mtime index, so only actually-modified files get read.
    */
   async refreshAll(): Promise<void> {
     if (!getWatchSettings().enabled) {
       this.clear();
       return;
     }
-    const targets = new Set<string>();
-    for (const change of this.changes.values()) {
-      targets.add(change.key);
-    }
-
+    const seen = new Set<string>();
     const folders = vscode.workspace.workspaceFolders ?? [];
     for (const folder of folders) {
-      if (folder.uri.scheme !== 'file') {
-        continue;
+      let files: vscode.Uri[] = [];
+      try {
+        files = await vscode.workspace.findFiles(new vscode.RelativePattern(folder, '**/*'));
+      } catch {
+        files = [];
       }
-      if (await this.isRepo(folder)) {
-        for (const relative of await gitStatusPaths(folder.uri.fsPath)) {
-          if (relative.startsWith('..')) {
-            continue;
-          }
-          targets.add(vscode.Uri.joinPath(folder.uri, ...relative.split('/')).toString());
+      for (const file of files) {
+        if (this.shouldIgnore(file)) {
+          continue;
         }
-      } else {
-        let files: vscode.Uri[] = [];
-        try {
-          files = await vscode.workspace.findFiles(new vscode.RelativePattern(folder, '**/*'));
-        } catch {
-          files = [];
-        }
-        for (const file of files) {
-          targets.add(file.toString());
-        }
+        seen.add(file.toString());
+        await this.evaluate(file);
       }
     }
-
-    for (const key of targets) {
-      const uri = vscode.Uri.parse(key);
-      if (this.shouldIgnore(uri)) {
-        this.remove(key);
-        continue;
+    // Files that only exist as stored baselines (e.g. deleted) are still checked.
+    for (const uri of await this.store.list()) {
+      if (!seen.has(uri.toString()) && !this.shouldIgnore(uri)) {
+        await this.evaluate(uri);
       }
-      await this.evaluate(uri);
     }
+    await this.store.flushIndex();
     this.emit();
   }
 

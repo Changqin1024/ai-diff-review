@@ -1,4 +1,15 @@
 import { execFile } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
+
+/** Cheap check for a git repository that does not spawn git. */
+export function isGitFolder(folderPath: string): boolean {
+  try {
+    return fs.existsSync(path.join(folderPath, '.git'));
+  } catch {
+    return false;
+  }
+}
 
 export interface GitResult {
   ok: boolean;

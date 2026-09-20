@@ -27,6 +27,85 @@ function sameFsPath(a: string, b: string): boolean {
 export class BaselineStore {
   constructor(private readonly context: vscode.ExtensionContext) {}
 
+  private indexCache?: Map<string, [number, number]>;
+  private indexDirty = false;
+  private indexFlushTimer?: ReturnType<typeof setTimeout>;
+
+  /** Map key: "<folderIndex>/<relativePath>" -> [size, mtimeMs] of the file as baselined. */
+  indexKey(uri: vscode.Uri): string {
+    const index = this.folderIndex(uri);
+    const folder = vscode.workspace.getWorkspaceFolder(uri);
+    return `${index}/${relativePathOf(folder, uri)}`;
+  }
+
+  private get indexFile(): vscode.Uri {
+    return vscode.Uri.joinPath(this.dataRoot, 'baseline-index.json');
+  }
+
+  private async ensureIndex(): Promise<Map<string, [number, number]>> {
+    if (this.indexCache) {
+      return this.indexCache;
+    }
+    const map = new Map<string, [number, number]>();
+    try {
+      const bytes = await vscode.workspace.fs.readFile(this.indexFile);
+      const parsed = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
+      for (const [key, value] of Object.entries(parsed)) {
+        if (Array.isArray(value) && value.length === 2) {
+          map.set(key, [Number(value[0]), Number(value[1])]);
+        }
+      }
+    } catch {
+      /* no index yet */
+    }
+    this.indexCache = map;
+    return map;
+  }
+
+  /** Recorded [size, mtimeMs] for a file, or undefined if not baselined. */
+  async getStat(uri: vscode.Uri): Promise<[number, number] | undefined> {
+    return (await this.ensureIndex()).get(this.indexKey(uri));
+  }
+
+  async setStat(uri: vscode.Uri, size: number, mtime: number): Promise<void> {
+    (await this.ensureIndex()).set(this.indexKey(uri), [size, mtime]);
+    this.scheduleIndexFlush();
+  }
+
+  async clearStat(uri: vscode.Uri): Promise<void> {
+    if ((await this.ensureIndex()).delete(this.indexKey(uri))) {
+      this.scheduleIndexFlush();
+    }
+  }
+
+  private scheduleIndexFlush(): void {
+    this.indexDirty = true;
+    if (this.indexFlushTimer) {
+      clearTimeout(this.indexFlushTimer);
+    }
+    this.indexFlushTimer = setTimeout(() => {
+      this.indexFlushTimer = undefined;
+      void this.flushIndex();
+    }, 500);
+  }
+
+  async flushIndex(): Promise<void> {
+    if (!this.indexDirty || !this.indexCache) {
+      return;
+    }
+    this.indexDirty = false;
+    const obj: Record<string, [number, number]> = {};
+    for (const [key, value] of this.indexCache) {
+      obj[key] = value;
+    }
+    try {
+      await vscode.workspace.fs.createDirectory(this.dataRoot);
+      await vscode.workspace.fs.writeFile(this.indexFile, new TextEncoder().encode(JSON.stringify(obj)));
+    } catch {
+      /* ignore */
+    }
+  }
+
   /** Stable pointer file that always lives in the extension storage. */
   private get pointerFile(): vscode.Uri {
     return vscode.Uri.joinPath(this.context.storageUri ?? this.context.globalStorageUri, 'cache-location.json');
@@ -100,6 +179,8 @@ export class BaselineStore {
     const fromRoot = vscode.Uri.file(previous);
     await this.movePath(vscode.Uri.joinPath(fromRoot, 'baseline'), this.baselineDir);
     await this.movePath(vscode.Uri.joinPath(fromRoot, 'workspace-folders.json'), this.metaFile);
+    await this.movePath(vscode.Uri.joinPath(fromRoot, 'baseline-index.json'), this.indexFile);
+    this.indexCache = undefined;
     await this.writePointer(current);
     return true;
   }
@@ -190,6 +271,7 @@ export class BaselineStore {
     } catch {
       /* ignore */
     }
+    await this.clearStat(uri);
   }
 
   async clear(): Promise<void> {
@@ -198,6 +280,13 @@ export class BaselineStore {
     } catch {
       /* ignore */
     }
+    try {
+      await vscode.workspace.fs.delete(this.indexFile);
+    } catch {
+      /* ignore */
+    }
+    this.indexCache = new Map();
+    this.indexDirty = false;
   }
 
   private get metaFile(): vscode.Uri {
@@ -324,6 +413,7 @@ export class BaselineStore {
     for (const folder of folders) {
       count += await this.snapshotFolder(folder, ignore, useGitBaseline, onlyMissing, include, skipBinary);
     }
+    await this.flushIndex();
     return count;
   }
 
@@ -373,6 +463,12 @@ export class BaselineStore {
         continue;
       }
       await this.write(file, data);
+      try {
+        const stat = await vscode.workspace.fs.stat(file);
+        await this.setStat(file, stat.size, stat.mtime);
+      } catch {
+        /* ignore */
+      }
       count++;
     }
     return count;

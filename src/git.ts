@@ -64,28 +64,6 @@ export interface GitRename {
   to: string;
 }
 
-/** All paths reported by `git status` (changed, staged, deleted, untracked, renamed). */
-export async function gitStatusPaths(cwd: string): Promise<string[]> {
-  const res = await runGit(cwd, ['-c', 'core.quotepath=false', 'status', '--porcelain', '-z']);
-  if (!res.ok) {
-    return [];
-  }
-  const parts = res.stdout.split('\0').filter((s) => s.length > 0);
-  const paths = new Set<string>();
-  for (let i = 0; i < parts.length; i++) {
-    const record = parts[i];
-    const status = record.slice(0, 2);
-    paths.add(record.slice(3).replace(/\\/g, '/'));
-    if (/[RC]/.test(status)) {
-      const source = parts[++i];
-      if (source !== undefined) {
-        paths.add(source.replace(/\\/g, '/'));
-      }
-    }
-  }
-  return [...paths];
-}
-
 /** Detect renames/moves (including content edits) from git status. */
 export async function gitRenames(cwd: string): Promise<GitRename[]> {
   const res = await runGit(cwd, ['-c', 'core.quotepath=false', 'status', '--porcelain', '-M', '-z']);

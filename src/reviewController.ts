@@ -11,7 +11,7 @@ import {
 } from './diffEngine';
 import { AiReviewContentProvider } from './diffContentProvider';
 import { gitRenames, isGitFolder } from './git';
-import { getWatchSettings, invalidatePathCache, isExcluded, isIncluded, matchesEntry } from './settings';
+import { getWatchSettings, enumerationExclude, invalidatePathCache, isExcluded, isIncluded, matchesEntry } from './settings';
 import { DisplayRow, FileChange, FileChangeView, PanelFile } from './types';
 import {
   basename,
@@ -270,7 +270,14 @@ export class ReviewController {
     const settings = getWatchSettings();
     const include = (relativePath: string): boolean =>
       isIncluded(relativePath, settings) && !isExcluded(relativePath, settings);
-    const count = await this.store.snapshotWorkspace(ignore, useGit, onlyMissing, include, !trackBinary);
+    const count = await this.store.snapshotWorkspace(
+      ignore,
+      useGit,
+      onlyMissing,
+      include,
+      !trackBinary,
+      enumerationExclude()
+    );
     await this.tracker.refreshAll();
     return count;
   }

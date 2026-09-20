@@ -4,7 +4,8 @@ import { FileChange } from './types';
 import { bytesEqual, isProbablyBinary, relativePathOf } from './util';
 import { decodeWith } from './encoding';
 import { resolveEncoding } from './encodingVSCode';
-import { getWatchSettings, isExcluded, isIncluded } from './settings';
+import { getWatchSettings, enumerationExclude, isExcluded, isIncluded } from './settings';
+import { contentHash, hashFile } from './hash';
 
 /**
  * Watches the workspace for external file mutations (e.g. an code agent writing
@@ -183,7 +184,8 @@ export class ChangeTracker implements vscode.Disposable {
     const key = uri.toString();
 
     // Fast path: if the file's size/mtime match the baselined stat, it cannot
-    // have changed — skip reading its contents entirely.
+    // have changed — skip reading its contents. For "racy" timestamps (just
+    // written) verify a cheap content fingerprint instead of trusting mtime.
     const recorded = await this.store.getStat(uri);
     let stat: vscode.FileStat | undefined;
     try {
@@ -192,8 +194,15 @@ export class ChangeTracker implements vscode.Disposable {
       stat = undefined;
     }
     if (recorded && stat && stat.size === recorded[0] && Math.abs(stat.mtime - recorded[1]) < 1.5) {
-      this.remove(key);
-      return;
+      if (Date.now() - stat.mtime > 2000 || uri.scheme !== 'file') {
+        this.remove(key);
+        return;
+      }
+      const fingerprint = await hashFile(uri.fsPath, stat.size);
+      if (fingerprint !== undefined && fingerprint === recorded[2]) {
+        this.remove(key);
+        return;
+      }
     }
 
     const baselineBytes = await this.store.read(uri);
@@ -207,9 +216,9 @@ export class ChangeTracker implements vscode.Disposable {
     const maxBytes = this.maxTextBytes;
     const change = await this.buildChange(key, uri, folder, baselineBytes, currentBytes, maxBytes);
     if (!change) {
-      // No difference: remember the current stat so future checks are cheap.
-      if (stat) {
-        await this.store.setStat(uri, stat.size, stat.mtime);
+      // No difference: remember the current stat + fingerprint so future checks are cheap.
+      if (stat && currentBytes) {
+        await this.store.setStat(uri, stat.size, stat.mtime, contentHash(currentBytes));
       } else {
         await this.store.clearStat(uri);
       }
@@ -287,12 +296,19 @@ export class ChangeTracker implements vscode.Disposable {
       this.clear();
       return;
     }
+    // After "clear cache" there is no baseline at all; scanning would flag
+    // every file as added. Wait until a new baseline is recorded.
+    if (!(await this.store.isInitialized())) {
+      this.clear();
+      return;
+    }
     const seen = new Set<string>();
+    const exclude = enumerationExclude();
     const folders = vscode.workspace.workspaceFolders ?? [];
     for (const folder of folders) {
       let files: vscode.Uri[] = [];
       try {
-        files = await vscode.workspace.findFiles(new vscode.RelativePattern(folder, '**/*'));
+        files = await vscode.workspace.findFiles(new vscode.RelativePattern(folder, '**/*'), exclude);
       } catch {
         files = [];
       }

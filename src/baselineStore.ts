@@ -2,6 +2,7 @@ import * as crypto from 'crypto';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { isGitRepo, listTrackedFiles, showHeadFile } from './git';
+import { contentHash } from './hash';
 import { matchesAny, relativePathOf, isProbablyBinary } from './util';
 
 export interface BaselineMeta {
@@ -27,11 +28,11 @@ function sameFsPath(a: string, b: string): boolean {
 export class BaselineStore {
   constructor(private readonly context: vscode.ExtensionContext) {}
 
-  private indexCache?: Map<string, [number, number]>;
+  private indexCache?: Map<string, [number, number, string]>;
   private indexDirty = false;
   private indexFlushTimer?: ReturnType<typeof setTimeout>;
 
-  /** Map key: "<folderIndex>/<relativePath>" -> [size, mtimeMs] of the file as baselined. */
+  /** Map key: "<folderIndex>/<relativePath>" -> [size, mtimeMs, contentHash]. */
   indexKey(uri: vscode.Uri): string {
     const index = this.folderIndex(uri);
     const folder = vscode.workspace.getWorkspaceFolder(uri);
@@ -42,17 +43,17 @@ export class BaselineStore {
     return vscode.Uri.joinPath(this.dataRoot, 'baseline-index.json');
   }
 
-  private async ensureIndex(): Promise<Map<string, [number, number]>> {
+  private async ensureIndex(): Promise<Map<string, [number, number, string]>> {
     if (this.indexCache) {
       return this.indexCache;
     }
-    const map = new Map<string, [number, number]>();
+    const map = new Map<string, [number, number, string]>();
     try {
       const bytes = await vscode.workspace.fs.readFile(this.indexFile);
       const parsed = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
       for (const [key, value] of Object.entries(parsed)) {
-        if (Array.isArray(value) && value.length === 2) {
-          map.set(key, [Number(value[0]), Number(value[1])]);
+        if (Array.isArray(value) && value.length >= 2) {
+          map.set(key, [Number(value[0]), Number(value[1]), typeof value[2] === 'string' ? value[2] : '']);
         }
       }
     } catch {
@@ -62,19 +63,29 @@ export class BaselineStore {
     return map;
   }
 
-  /** Recorded [size, mtimeMs] for a file, or undefined if not baselined. */
-  async getStat(uri: vscode.Uri): Promise<[number, number] | undefined> {
+  /** Recorded [size, mtimeMs, contentHash] for a file, or undefined if not baselined. */
+  async getStat(uri: vscode.Uri): Promise<[number, number, string] | undefined> {
     return (await this.ensureIndex()).get(this.indexKey(uri));
   }
 
-  async setStat(uri: vscode.Uri, size: number, mtime: number): Promise<void> {
-    (await this.ensureIndex()).set(this.indexKey(uri), [size, mtime]);
+  async setStat(uri: vscode.Uri, size: number, mtime: number, hash: string): Promise<void> {
+    (await this.ensureIndex()).set(this.indexKey(uri), [size, mtime, hash]);
     this.scheduleIndexFlush();
   }
 
   async clearStat(uri: vscode.Uri): Promise<void> {
     if ((await this.ensureIndex()).delete(this.indexKey(uri))) {
       this.scheduleIndexFlush();
+    }
+  }
+
+  /** Whether a baseline store exists for this workspace (false after "clear cache"). */
+  async isInitialized(): Promise<boolean> {
+    try {
+      await vscode.workspace.fs.stat(this.baselineDir);
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -94,7 +105,7 @@ export class BaselineStore {
       return;
     }
     this.indexDirty = false;
-    const obj: Record<string, [number, number]> = {};
+    const obj: Record<string, [number, number, string]> = {};
     for (const [key, value] of this.indexCache) {
       obj[key] = value;
     }
@@ -285,6 +296,11 @@ export class BaselineStore {
     } catch {
       /* ignore */
     }
+    try {
+      await vscode.workspace.fs.delete(this.metaFile);
+    } catch {
+      /* ignore */
+    }
     this.indexCache = new Map();
     this.indexDirty = false;
   }
@@ -328,25 +344,6 @@ export class BaselineStore {
     await this.write(to, bytes);
     await this.delete(from);
     return true;
-  }
-
-  /** Delete baselines whose corresponding workspace file no longer exists. */
-  async pruneMissing(): Promise<number> {
-    const uris = await this.list();
-    let removed = 0;
-    for (const uri of uris) {
-      let exists = true;
-      try {
-        await vscode.workspace.fs.stat(uri);
-      } catch {
-        exists = false;
-      }
-      if (!exists) {
-        await this.delete(uri);
-        removed++;
-      }
-    }
-    return removed;
   }
 
   /** Delete baselines whose workspace-relative path matches the predicate. */
@@ -406,12 +403,13 @@ export class BaselineStore {
     useGitBaseline: boolean,
     onlyMissing = false,
     include?: (relativePath: string) => boolean,
-    skipBinary = false
+    skipBinary = false,
+    excludeGlob?: string
   ): Promise<number> {
     const folders = vscode.workspace.workspaceFolders ?? [];
     let count = 0;
     for (const folder of folders) {
-      count += await this.snapshotFolder(folder, ignore, useGitBaseline, onlyMissing, include, skipBinary);
+      count += await this.snapshotFolder(folder, ignore, useGitBaseline, onlyMissing, include, skipBinary, excludeGlob);
     }
     await this.flushIndex();
     return count;
@@ -423,9 +421,10 @@ export class BaselineStore {
     useGitBaseline: boolean,
     onlyMissing: boolean,
     include?: (relativePath: string) => boolean,
-    skipBinary = false
+    skipBinary = false,
+    excludeGlob?: string
   ): Promise<number> {
-    const files = await vscode.workspace.findFiles(new vscode.RelativePattern(folder, '**/*'));
+    const files = await vscode.workspace.findFiles(new vscode.RelativePattern(folder, '**/*'), excludeGlob);
     let count = 0;
 
     let gitRepo = false;
@@ -465,7 +464,7 @@ export class BaselineStore {
       await this.write(file, data);
       try {
         const stat = await vscode.workspace.fs.stat(file);
-        await this.setStat(file, stat.size, stat.mtime);
+        await this.setStat(file, stat.size, stat.mtime, contentHash(data));
       } catch {
         /* ignore */
       }

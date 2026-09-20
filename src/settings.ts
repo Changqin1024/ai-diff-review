@@ -96,3 +96,22 @@ export function isIncluded(relativePath: string, settings: WatchSettings): boole
   }
   return settings.paths.some((entry) => matchesEntry(relativePath, entry));
 }
+
+/**
+ * A single glob for `workspace.findFiles`'s exclude so we never enumerate
+ * ignored trees like node_modules. Returns undefined when nothing to exclude.
+ */
+export function enumerationExclude(): string | undefined {
+  const patterns = new Set<string>(getGlobalIgnore());
+  const settings = getWatchSettings();
+  for (const entry of settings.exclude) {
+    if (/[*?[\]{}]/.test(entry)) {
+      patterns.add(entry);
+    } else {
+      patterns.add(entry);
+      patterns.add(`${entry}/**`);
+    }
+  }
+  const list = [...patterns].filter((p) => p.length > 0);
+  return list.length > 0 ? `{${list.join(',')}}` : undefined;
+}

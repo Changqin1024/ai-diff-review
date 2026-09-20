@@ -305,7 +305,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       { location: vscode.ProgressLocation.Window, title: 'AI 审查：正在同步基线…' },
       async () => {
         await controller.relocateStore();
-        const rec = await controller.reconcile(autoCheckpoint);
+        const rec = await controller.reconcile(autoCheckpoint && watchEnabled);
         if (rec.pruned > 0 || rec.remapped > 0) {
           void vscode.window.setStatusBarMessage(
             `AI 审查：基线已同步（清理 ${rec.pruned}，迁移 ${rec.remapped}）。`,

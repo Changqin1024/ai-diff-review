@@ -39,6 +39,7 @@ export class SettingsViewProvider implements vscode.WebviewViewProvider {
     if (!this.view) {
       return;
     }
+    const config = vscode.workspace.getConfiguration('aiReview');
     const settings = getWatchSettings();
     const stats = await this.controller.cacheStats();
     void this.view.webview.postMessage({
@@ -48,7 +49,14 @@ export class SettingsViewProvider implements vscode.WebviewViewProvider {
       excludes: settings.exclude,
       files: stats.files,
       size: humanSize(stats.bytes),
+      cacheDir: (config.get<string>('cacheDir', '') ?? '').trim(),
+      trackBinary: config.get<boolean>('trackBinaryFiles', false),
+      diffDisplay: config.get<string>('diffDisplay', 'full'),
     });
+  }
+
+  private async updateSetting(key: string, value: unknown): Promise<void> {
+    await vscode.workspace.getConfiguration('aiReview').update(key, value, vscode.ConfigurationTarget.Workspace);
   }
 
   private async updateWatch(key: string, value: unknown): Promise<void> {
@@ -193,6 +201,39 @@ export class SettingsViewProvider implements vscode.WebviewViewProvider {
         await this.update();
         return;
       }
+      case 'pickCacheDir': {
+        const folders = vscode.workspace.workspaceFolders;
+        const picked = await vscode.window.showOpenDialog({
+          canSelectFiles: false,
+          canSelectFolders: true,
+          canSelectMany: false,
+          defaultUri: folders?.[0]?.uri,
+          openLabel: '使用此目录',
+          title: '选择基线缓存目录',
+        });
+        if (picked && picked[0]) {
+          await this.updateSetting('cacheDir', picked[0].fsPath);
+          await this.controller.relocateStore();
+        }
+        await this.update();
+        return;
+      }
+      case 'resetCacheDir': {
+        await this.updateSetting('cacheDir', '');
+        await this.controller.relocateStore();
+        await this.update();
+        return;
+      }
+      case 'setTrackBinary': {
+        await this.updateSetting('trackBinaryFiles', Boolean(message.checked));
+        await this.update();
+        return;
+      }
+      case 'setDiffDisplay': {
+        await this.updateSetting('diffDisplay', message.value === 'hunks' ? 'hunks' : 'full');
+        await this.update();
+        return;
+      }
       case 'openSettings':
         await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:changqin.ai-diff-review');
         return;
@@ -242,7 +283,11 @@ export class SettingsViewProvider implements vscode.WebviewViewProvider {
   .foot { border-top: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.35)); padding-top: 10px; }
   a { color: var(--vscode-textLink-foreground); cursor: pointer; text-decoration: none; }
   a:hover { text-decoration: underline; }
-  .disabled { opacity: 0.5; }
+  .dir-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+  .dir { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--vscode-editor-font-family, monospace); font-size: 0.82em; color: var(--vscode-descriptionForeground); }
+  .field { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; }
+  .field-label { font-size: 0.9em; }
+  select { font-family: inherit; font-size: 0.85em; background: var(--vscode-dropdown-background, #3a3d41); color: var(--vscode-dropdown-foreground, #fff); border: 1px solid var(--vscode-dropdown-border, #3a3d41); border-radius: 4px; padding: 2px 6px; }
 </style>
 </head>
 <body>
@@ -282,7 +327,29 @@ export class SettingsViewProvider implements vscode.WebviewViewProvider {
       <span class="title">缓存</span>
       <button class="btn reject" id="clear-cache">清理</button>
     </div>
+    <div class="dir-row">
+      <span class="dir" id="cache-dir" title=""></span>
+      <button class="btn" id="pick-cache-dir">选择目录…</button>
+      <button class="btn" id="reset-cache-dir">恢复默认</button>
+    </div>
     <div class="hint" id="cache-info"></div>
+  </div>
+
+  <div class="section">
+    <div class="section-head">
+      <span class="title">内容</span>
+    </div>
+    <label class="switch-row">
+      <input type="checkbox" id="track-binary" />
+      <span class="label">追踪二进制文件</span>
+    </label>
+    <div class="field">
+      <span class="field-label">diff 显示范围</span>
+      <select id="diff-display">
+        <option value="full">整份文件</option>
+        <option value="hunks">仅变更片段</option>
+      </select>
+    </div>
   </div>
 
   <div class="section">
@@ -303,6 +370,9 @@ export class SettingsViewProvider implements vscode.WebviewViewProvider {
     const pathsEl = document.getElementById('paths');
     const excludesEl = document.getElementById('excludes');
     const cacheInfoEl = document.getElementById('cache-info');
+    const cacheDirEl = document.getElementById('cache-dir');
+    const trackBinaryEl = document.getElementById('track-binary');
+    const diffDisplayEl = document.getElementById('diff-display');
 
     function esc(v) {
       return String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -322,6 +392,10 @@ export class SettingsViewProvider implements vscode.WebviewViewProvider {
       renderChips(pathsEl, state.paths, 'removePath', '整个工作区');
       renderChips(excludesEl, state.excludes, 'removeExclude', '无');
       cacheInfoEl.textContent = state.files + ' 个文件 · ' + state.size;
+      cacheDirEl.textContent = state.cacheDir ? state.cacheDir : '扩展默认存储';
+      cacheDirEl.title = state.cacheDir || '扩展默认存储';
+      trackBinaryEl.checked = !!state.trackBinary;
+      diffDisplayEl.value = state.diffDisplay === 'hunks' ? 'hunks' : 'full';
     }
     document.getElementById('add-path').addEventListener('click', () => vscode.postMessage({ type: 'addPath' }));
     document.getElementById('add-exclude-path').addEventListener('click', () => vscode.postMessage({ type: 'addExcludePath' }));
@@ -330,7 +404,11 @@ export class SettingsViewProvider implements vscode.WebviewViewProvider {
     document.getElementById('reset-baseline').addEventListener('click', () => vscode.postMessage({ type: 'resetBaseline' }));
     document.getElementById('open-settings').addEventListener('click', () => vscode.postMessage({ type: 'openSettings' }));
     document.getElementById('back').addEventListener('click', () => vscode.postMessage({ type: 'exit' }));
+    document.getElementById('pick-cache-dir').addEventListener('click', () => vscode.postMessage({ type: 'pickCacheDir' }));
+    document.getElementById('reset-cache-dir').addEventListener('click', () => vscode.postMessage({ type: 'resetCacheDir' }));
     enabledEl.addEventListener('change', () => vscode.postMessage({ type: 'setEnabled', checked: enabledEl.checked }));
+    trackBinaryEl.addEventListener('change', () => vscode.postMessage({ type: 'setTrackBinary', checked: trackBinaryEl.checked }));
+    diffDisplayEl.addEventListener('change', () => vscode.postMessage({ type: 'setDiffDisplay', value: diffDisplayEl.value }));
     document.body.addEventListener('click', (e) => {
       const btn = e.target.closest('button[data-action]');
       if (btn) {

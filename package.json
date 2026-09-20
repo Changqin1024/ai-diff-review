@@ -61,6 +61,32 @@
           "scope": "resource",
           "markdownDescription": "当前工作区额外排除的路径或 glob；与全局 `#aiReview.ignore#` 互相独立、同时生效。（工作区级设置）"
         },
+        "aiReview.cacheDir": {
+          "type": "string",
+          "default": "",
+          "scope": "resource",
+          "markdownDescription": "基线缓存目录（留空表示使用扩展默认存储）。更改后会把已有基线**移动**到新目录。"
+        },
+        "aiReview.trackBinaryFiles": {
+          "type": "boolean",
+          "default": false,
+          "scope": "resource",
+          "markdownDescription": "是否追踪二进制文件。关闭时会延迟删除已存储的二进制文件基线。"
+        },
+        "aiReview.diffDisplay": {
+          "type": "string",
+          "enum": [
+            "full",
+            "hunks"
+          ],
+          "enumDescriptions": [
+            "显示整份文件内容",
+            "只显示变更片段"
+          ],
+          "default": "full",
+          "scope": "resource",
+          "markdownDescription": "审查面板的 diff 显示范围。"
+        },
         "aiReview.autoCheckpoint": {
           "type": "boolean",
           "default": true,

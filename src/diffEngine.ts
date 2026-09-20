@@ -196,6 +196,44 @@ export function buildUnifiedRows(baseline: string, current: string, context = DI
 }
 
 /** Count added/removed lines across a text pair. */
+/**
+ * Flatten only the changed regions (with a little context) for the panel.
+ * Used when the "diffDisplay" setting is set to "hunks".
+ */
+export function buildHunkRows(baseline: string, current: string, context = DIFF_CONTEXT): DisplayRow[] {
+  const hunks = computeDiff(baseline, current, context);
+  const rows: DisplayRow[] = [];
+  for (const hunk of hunks) {
+    let additions = 0;
+    let deletions = 0;
+    for (const line of hunk.lines) {
+      if (line.type === '+') {
+        additions++;
+      } else if (line.type === '-') {
+        deletions++;
+      }
+    }
+    rows.push({
+      kind: 'hunk',
+      hunkIndex: hunk.index,
+      header: hunk.header,
+      label: hunkRangeLabel(hunk),
+      additions,
+      deletions,
+    });
+    for (const line of hunk.lines) {
+      if (line.type === ' ') {
+        rows.push({ kind: 'context', oldLine: line.oldLine ?? 0, newLine: line.newLine ?? 0, text: line.text });
+      } else if (line.type === '-') {
+        rows.push({ kind: 'del', oldLine: line.oldLine ?? 0, text: line.text });
+      } else {
+        rows.push({ kind: 'add', newLine: line.newLine ?? 0, text: line.text });
+      }
+    }
+  }
+  return rows;
+}
+
 export function countChanges(oldText: string, newText: string): { additions: number; deletions: number } {
   const hunks = computeDiff(oldText, newText);
   let additions = 0;

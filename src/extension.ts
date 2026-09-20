@@ -258,6 +258,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (e.affectsConfiguration('aiReview.watch')) {
         void controller.reconcile();
       }
+      if (e.affectsConfiguration('aiReview.cacheDir')) {
+        void controller.relocateStore();
+      }
+      if (e.affectsConfiguration('aiReview.trackBinaryFiles')) {
+        if (vscode.workspace.getConfiguration('aiReview').get<boolean>('trackBinaryFiles', false)) {
+          controller.cancelBinaryCleanup();
+          void controller.createCheckpoint(true);
+        } else {
+          controller.scheduleBinaryCleanup();
+        }
+      }
     }),
     vscode.window.onDidChangeActiveTextEditor(() => updateActiveDiffContext())
   );
@@ -268,6 +279,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   const autoCheckpoint = vscode.workspace.getConfiguration('aiReview').get<boolean>('autoCheckpoint', true);
   const watchEnabled = getWatchSettings().enabled;
+
+  await controller.relocateStore();
 
   const rec = await controller.reconcile();
   if (rec.pruned > 0 || rec.remapped > 0) {

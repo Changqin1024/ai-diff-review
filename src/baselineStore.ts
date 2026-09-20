@@ -1,6 +1,8 @@
+import * as crypto from 'crypto';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { isGitRepo, listTrackedFiles, showHeadFile } from './git';
-import { matchesAny, relativePathOf } from './util';
+import { matchesAny, relativePathOf, isProbablyBinary } from './util';
 
 export interface BaselineMeta {
   /** Workspace folder fsPaths recorded when the baselines were captured. */
@@ -9,24 +11,139 @@ export interface BaselineMeta {
   paths: string[];
 }
 
+function sameFsPath(a: string, b: string): boolean {
+  return a.replace(/\\/g, '/').toLowerCase() === b.replace(/\\/g, '/').toLowerCase();
+}
+
 /**
  * Stores the "baseline" (pre-change) content of tracked files, one real file
- * per workspace file, mirrored under the extension storage directory:
+ * per workspace file, mirrored under a storage directory:
  *
- *   <storage>/baseline/f0/src/app.ts
+ *   <root>/baseline/f0/src/app.ts
  *
- * Using real files keeps things transparent and lets us feed them straight to
- * the native diff editor if desired.
+ * The root defaults to the extension storage but can be pointed at a custom
+ * cache directory (`aiReview.cacheDir`); changing it moves the data.
  */
 export class BaselineStore {
   constructor(private readonly context: vscode.ExtensionContext) {}
 
-  private get root(): vscode.Uri {
+  /** Stable pointer file that always lives in the extension storage. */
+  private get pointerFile(): vscode.Uri {
+    return vscode.Uri.joinPath(this.context.storageUri ?? this.context.globalStorageUri, 'cache-location.json');
+  }
+
+  private get defaultRoot(): vscode.Uri {
     return this.context.storageUri ?? this.context.globalStorageUri;
   }
 
+  private namespace(): string {
+    const folders = (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath).join('|');
+    return crypto.createHash('sha1').update(folders || 'no-workspace').digest('hex').slice(0, 12);
+  }
+
+  /** Where the baselines actually live right now. */
+  private get dataRoot(): vscode.Uri {
+    const configured = (vscode.workspace.getConfiguration('aiReview').get<string>('cacheDir', '') ?? '').trim();
+    if (!configured) {
+      return this.defaultRoot;
+    }
+    let base: vscode.Uri;
+    if (path.isAbsolute(configured)) {
+      base = vscode.Uri.file(configured);
+    } else {
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      if (!folder) {
+        return this.defaultRoot;
+      }
+      base = vscode.Uri.joinPath(folder.uri, ...configured.split(/[\\/]/).filter((s) => s.length > 0));
+    }
+    return vscode.Uri.joinPath(base, this.namespace());
+  }
+
   private get baselineDir(): vscode.Uri {
-    return vscode.Uri.joinPath(this.root, 'baseline');
+    return vscode.Uri.joinPath(this.dataRoot, 'baseline');
+  }
+
+  private async readPointer(): Promise<string | undefined> {
+    try {
+      const bytes = await vscode.workspace.fs.readFile(this.pointerFile);
+      const parsed = JSON.parse(new TextDecoder().decode(bytes)) as { root?: unknown };
+      return typeof parsed.root === 'string' ? parsed.root : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async writePointer(root: string): Promise<void> {
+    try {
+      await vscode.workspace.fs.createDirectory(this.defaultRoot);
+      await vscode.workspace.fs.writeFile(
+        this.pointerFile,
+        new TextEncoder().encode(JSON.stringify({ root }, null, 2))
+      );
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** Move stored baselines when the configured cache directory changed. */
+  async relocate(): Promise<boolean> {
+    const pointer = await this.readPointer();
+    const current = this.dataRoot.fsPath;
+    const previous = pointer ?? this.defaultRoot.fsPath;
+    if (sameFsPath(previous, current)) {
+      if (!pointer) {
+        await this.writePointer(current);
+      }
+      return false;
+    }
+    const fromRoot = vscode.Uri.file(previous);
+    await this.movePath(vscode.Uri.joinPath(fromRoot, 'baseline'), this.baselineDir);
+    await this.movePath(vscode.Uri.joinPath(fromRoot, 'workspace-folders.json'), this.metaFile);
+    await this.writePointer(current);
+    return true;
+  }
+
+  private async movePath(from: vscode.Uri, to: vscode.Uri): Promise<void> {
+    let fromExists = true;
+    try {
+      await vscode.workspace.fs.stat(from);
+    } catch {
+      fromExists = false;
+    }
+    if (!fromExists) {
+      return;
+    }
+    try {
+      await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(to, '..'));
+    } catch {
+      /* ignore */
+    }
+    try {
+      await vscode.workspace.fs.rename(from, to, { overwrite: true });
+      return;
+    } catch {
+      /* fall through to copy + delete (e.g. across drives) */
+    }
+    await this.copyRecursive(from, to);
+    try {
+      await vscode.workspace.fs.delete(from, { recursive: true, useTrash: false });
+    } catch {
+      /* ignore */
+    }
+  }
+
+  private async copyRecursive(from: vscode.Uri, to: vscode.Uri): Promise<void> {
+    const stat = await vscode.workspace.fs.stat(from);
+    if (stat.type === vscode.FileType.Directory) {
+      await vscode.workspace.fs.createDirectory(to);
+      for (const [name] of await vscode.workspace.fs.readDirectory(from)) {
+        await this.copyRecursive(vscode.Uri.joinPath(from, name), vscode.Uri.joinPath(to, name));
+      }
+    } else {
+      const bytes = await vscode.workspace.fs.readFile(from);
+      await vscode.workspace.fs.writeFile(to, bytes);
+    }
   }
 
   private folderIndex(uri: vscode.Uri): number {
@@ -84,7 +201,7 @@ export class BaselineStore {
   }
 
   private get metaFile(): vscode.Uri {
-    return vscode.Uri.joinPath(this.root, 'workspace-folders.json');
+    return vscode.Uri.joinPath(this.dataRoot, 'workspace-folders.json');
   }
 
   /** Metadata recorded when the baselines were captured. */
@@ -103,7 +220,7 @@ export class BaselineStore {
 
   async writeMeta(meta: BaselineMeta): Promise<void> {
     try {
-      await vscode.workspace.fs.createDirectory(this.root);
+      await vscode.workspace.fs.createDirectory(this.dataRoot);
       await vscode.workspace.fs.writeFile(
         this.metaFile,
         new TextEncoder().encode(JSON.stringify(meta, null, 2))
@@ -199,12 +316,13 @@ export class BaselineStore {
     ignore: string[],
     useGitBaseline: boolean,
     onlyMissing = false,
-    include?: (relativePath: string) => boolean
+    include?: (relativePath: string) => boolean,
+    skipBinary = false
   ): Promise<number> {
     const folders = vscode.workspace.workspaceFolders ?? [];
     let count = 0;
     for (const folder of folders) {
-      count += await this.snapshotFolder(folder, ignore, useGitBaseline, onlyMissing, include);
+      count += await this.snapshotFolder(folder, ignore, useGitBaseline, onlyMissing, include, skipBinary);
     }
     return count;
   }
@@ -214,7 +332,8 @@ export class BaselineStore {
     ignore: string[],
     useGitBaseline: boolean,
     onlyMissing: boolean,
-    include?: (relativePath: string) => boolean
+    include?: (relativePath: string) => boolean,
+    skipBinary = false
   ): Promise<number> {
     const files = await vscode.workspace.findFiles(new vscode.RelativePattern(folder, '**/*'));
     let count = 0;
@@ -249,6 +368,9 @@ export class BaselineStore {
         } catch {
           continue;
         }
+      }
+      if (skipBinary && isProbablyBinary(data)) {
+        continue;
       }
       await this.write(file, data);
       count++;

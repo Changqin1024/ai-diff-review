@@ -4,6 +4,7 @@ import { BaselineStore } from './baselineStore';
 import { ChangeTracker } from './changeTracker';
 import {
   acceptHunk as acceptHunkText,
+  buildHunkRows,
   buildUnifiedRows,
   computeDiff,
   rejectHunk as rejectHunkText,
@@ -117,7 +118,12 @@ export class ReviewController {
   private toView(change: FileChange): FileChangeView {
     const hasText = !change.isBinary && !change.tooLarge;
     const hunks = hasText ? computeDiff(change.baseline, change.current) : [];
-    const rows = hasText ? buildUnifiedRows(change.baseline, change.current) : [];
+    const fullFile = vscode.workspace.getConfiguration('aiReview').get<string>('diffDisplay', 'full') !== 'hunks';
+    const rows = hasText
+      ? fullFile
+        ? buildUnifiedRows(change.baseline, change.current)
+        : buildHunkRows(change.baseline, change.current)
+      : [];
     let additions = 0;
     let deletions = 0;
     for (const h of hunks) {
@@ -234,10 +240,11 @@ export class ReviewController {
     const config = vscode.workspace.getConfiguration('aiReview');
     const ignore = config.get<string[]>('ignore', []);
     const useGit = config.get<boolean>('baselineFromGit', false);
+    const trackBinary = config.get<boolean>('trackBinaryFiles', false);
     const settings = getWatchSettings();
     const include = (relativePath: string): boolean =>
       isIncluded(relativePath, settings) && !isExcluded(relativePath, settings);
-    const count = await this.store.snapshotWorkspace(ignore, useGit, onlyMissing, include);
+    const count = await this.store.snapshotWorkspace(ignore, useGit, onlyMissing, include, !trackBinary);
     await this.tracker.refreshAll();
     return count;
   }
@@ -252,6 +259,53 @@ export class ReviewController {
     await vscode.workspace
       .getConfiguration('aiReview')
       .update('watch.exclude', entries, vscode.ConfigurationTarget.Workspace);
+  }
+
+  /** Move the stored baselines when the cache directory setting changed. */
+  async relocateStore(): Promise<boolean> {
+    const moved = await this.store.relocate();
+    if (moved) {
+      await this.tracker.refreshAll();
+    }
+    return moved;
+  }
+
+  private binaryCleanupTimer?: ReturnType<typeof setTimeout>;
+
+  /** Delay cleaning binary baselines so rapid toggling cancels out. */
+  scheduleBinaryCleanup(delayMs = 5000): void {
+    this.cancelBinaryCleanup();
+    this.binaryCleanupTimer = setTimeout(() => {
+      this.binaryCleanupTimer = undefined;
+      void this.pruneBinaryBaselines();
+    }, delayMs);
+  }
+
+  cancelBinaryCleanup(): void {
+    if (this.binaryCleanupTimer) {
+      clearTimeout(this.binaryCleanupTimer);
+      this.binaryCleanupTimer = undefined;
+    }
+  }
+
+  /** Delete stored baselines that look binary. */
+  async pruneBinaryBaselines(): Promise<number> {
+    if (vscode.workspace.getConfiguration('aiReview').get<boolean>('trackBinaryFiles', false)) {
+      return 0;
+    }
+    const uris = await this.store.list();
+    let removed = 0;
+    for (const uri of uris) {
+      const bytes = await this.store.read(uri);
+      if (bytes && isProbablyBinary(bytes)) {
+        await this.store.delete(uri);
+        removed++;
+      }
+    }
+    if (removed > 0) {
+      await this.tracker.refreshAll();
+    }
+    return removed;
   }
 
   /** Delete baselines of files that are now excluded in this workspace. */

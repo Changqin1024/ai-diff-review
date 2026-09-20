@@ -43,9 +43,13 @@ export class ChangeTracker implements vscode.Disposable {
         if (
           e.affectsConfiguration('aiReview.ignore') ||
           e.affectsConfiguration('aiReview.maxTextFileKB') ||
-          e.affectsConfiguration('aiReview.watch')
+          e.affectsConfiguration('aiReview.watch') ||
+          e.affectsConfiguration('aiReview.trackBinaryFiles')
         ) {
           void this.refreshAll();
+        }
+        if (e.affectsConfiguration('aiReview.diffDisplay')) {
+          this._onDidChange.fire();
         }
       })
     );
@@ -214,6 +218,9 @@ export class ChangeTracker implements vscode.Disposable {
 
     const sample = currentBytes ?? baselineBytes ?? new Uint8Array();
     const isBinary = isProbablyBinary(sample);
+    if (isBinary && !vscode.workspace.getConfiguration('aiReview').get<boolean>('trackBinaryFiles', false)) {
+      return undefined;
+    }
     const tooLarge = !isBinary && sample.length > maxBytes;
 
     let baseline = '';

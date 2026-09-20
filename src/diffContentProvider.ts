@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
 import { BaselineStore } from './baselineStore';
 import { ChangeTracker } from './changeTracker';
-import { detectEncoding, decodeWith } from './encoding';
+import { decodeWith } from './encoding';
+import { resolveEncoding } from './encodingVSCode';
 
 export class AiReviewContentProvider implements vscode.TextDocumentContentProvider, vscode.Disposable {
   static readonly scheme = 'ai-review';
@@ -42,11 +43,11 @@ export class AiReviewContentProvider implements vscode.TextDocumentContentProvid
 
     if (side === 'baseline') {
       const bytes = await this.store.read(target);
-      return bytes ? decodeWith(bytes, detectEncoding(bytes)) : '';
+      return bytes ? decodeWith(bytes, await resolveEncoding(target, bytes)) : '';
     }
     try {
       const bytes = await vscode.workspace.fs.readFile(target);
-      return decodeWith(bytes, detectEncoding(bytes));
+      return decodeWith(bytes, await resolveEncoding(target, bytes));
     } catch {
       return '';
     }

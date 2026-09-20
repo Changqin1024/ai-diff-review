@@ -24,6 +24,20 @@ const ALIASES: Record<string, string> = {
   'iso-8859-1': 'latin1',
 };
 
+/** Candidate encodings used when matching VS Code's guessed text back to bytes. */
+export const CANDIDATES = [
+  'utf-8',
+  'gbk',
+  'gb18030',
+  'big5',
+  'shift_jis',
+  'euc-jp',
+  'euc-kr',
+  'windows-1252',
+  'utf-16le',
+  'utf-16be',
+];
+
 function normalizeEncoding(name: string | null | undefined): string | undefined {
   if (!name) {
     return undefined;
@@ -77,4 +91,24 @@ export function encodeWith(text: string, encoding: string): Uint8Array {
   } catch {
     return new TextEncoder().encode(text);
   }
+}
+
+const normalizeEol = (text: string): string => text.replace(/\r\n/g, '\n');
+
+/**
+ * Find which candidate encoding decodes `raw` into the same text VS Code
+ * produced (EOL-insensitive). Used to identify VS Code's guessed encoding.
+ */
+export function matchEncoding(raw: Uint8Array, targetText: string): string | undefined {
+  const target = normalizeEol(targetText);
+  for (const candidate of CANDIDATES) {
+    try {
+      if (normalizeEol(iconv.decode(Buffer.from(raw), candidate)) === target) {
+        return candidate;
+      }
+    } catch {
+      /* try next */
+    }
+  }
+  return undefined;
 }

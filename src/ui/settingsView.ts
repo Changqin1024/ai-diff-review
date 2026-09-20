@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { ReviewController } from '../reviewController';
 import { getWatchSettings, normalizePath } from '../settings';
+import { autoGuessEnabled } from '../encodingVSCode';
 import { relativePathOf } from '../util';
 
 interface IncomingMessage {
@@ -52,6 +53,8 @@ export class SettingsViewProvider implements vscode.WebviewViewProvider {
       cacheDir: (config.get<string>('cacheDir', '') ?? '').trim(),
       trackBinary: config.get<boolean>('trackBinaryFiles', false),
       diffDisplay: config.get<string>('diffDisplay', 'full'),
+      autoGuess: autoGuessEnabled(),
+      reuseVSCode: config.get<boolean>('reuseVSCodeEncoding', false),
     });
   }
 
@@ -234,6 +237,22 @@ export class SettingsViewProvider implements vscode.WebviewViewProvider {
         await this.update();
         return;
       }
+      case 'setReuseVSCode': {
+        const checked = Boolean(message.checked);
+        if (checked && !autoGuessEnabled()) {
+          const choice = await vscode.window.showWarningMessage(
+            '需先在 VS Code 设置中开启 files.autoGuessEncoding，才能复用 VS Code 的编码识别。',
+            '打开设置'
+          );
+          if (choice === '打开设置') {
+            await vscode.commands.executeCommand('workbench.action.openSettings', 'files.autoGuessEncoding');
+          }
+        } else {
+          await this.updateSetting('reuseVSCodeEncoding', checked);
+        }
+        await this.update();
+        return;
+      }
       case 'openSettings':
         await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:changqin.ai-diff-review');
         return;
@@ -343,6 +362,11 @@ export class SettingsViewProvider implements vscode.WebviewViewProvider {
       <input type="checkbox" id="track-binary" />
       <span class="label">追踪二进制文件</span>
     </label>
+    <label class="switch-row">
+      <input type="checkbox" id="reuse-vscode" />
+      <span class="label">复用 VS Code 编码识别</span>
+    </label>
+    <div class="hint" id="reuse-hint"></div>
     <div class="field">
       <span class="field-label">diff 显示范围</span>
       <select id="diff-display">
@@ -373,6 +397,8 @@ export class SettingsViewProvider implements vscode.WebviewViewProvider {
     const cacheDirEl = document.getElementById('cache-dir');
     const trackBinaryEl = document.getElementById('track-binary');
     const diffDisplayEl = document.getElementById('diff-display');
+    const reuseVSCodeEl = document.getElementById('reuse-vscode');
+    const reuseHintEl = document.getElementById('reuse-hint');
 
     function esc(v) {
       return String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -396,6 +422,11 @@ export class SettingsViewProvider implements vscode.WebviewViewProvider {
       cacheDirEl.title = state.cacheDir || '扩展默认存储';
       trackBinaryEl.checked = !!state.trackBinary;
       diffDisplayEl.value = state.diffDisplay === 'hunks' ? 'hunks' : 'full';
+      reuseVSCodeEl.checked = !!state.reuseVSCode;
+      reuseVSCodeEl.disabled = !state.autoGuess;
+      reuseHintEl.textContent = state.autoGuess
+        ? '使用 VS Code 的自动编码猜测（files.autoGuessEncoding）'
+        : '需先在 VS Code 设置中开启 files.autoGuessEncoding 才能启用';
     }
     document.getElementById('add-path').addEventListener('click', () => vscode.postMessage({ type: 'addPath' }));
     document.getElementById('add-exclude-path').addEventListener('click', () => vscode.postMessage({ type: 'addExcludePath' }));
@@ -408,6 +439,7 @@ export class SettingsViewProvider implements vscode.WebviewViewProvider {
     document.getElementById('reset-cache-dir').addEventListener('click', () => vscode.postMessage({ type: 'resetCacheDir' }));
     enabledEl.addEventListener('change', () => vscode.postMessage({ type: 'setEnabled', checked: enabledEl.checked }));
     trackBinaryEl.addEventListener('change', () => vscode.postMessage({ type: 'setTrackBinary', checked: trackBinaryEl.checked }));
+    reuseVSCodeEl.addEventListener('change', () => vscode.postMessage({ type: 'setReuseVSCode', checked: reuseVSCodeEl.checked }));
     diffDisplayEl.addEventListener('change', () => vscode.postMessage({ type: 'setDiffDisplay', value: diffDisplayEl.value }));
     document.body.addEventListener('click', (e) => {
       const btn = e.target.closest('button[data-action]');

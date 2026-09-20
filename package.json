@@ -87,6 +87,12 @@
           "scope": "resource",
           "markdownDescription": "审查面板的 diff 显示范围。"
         },
+        "aiReview.reuseVSCodeEncoding": {
+          "type": "boolean",
+          "default": false,
+          "scope": "resource",
+          "markdownDescription": "复用 VS Code 的编码识别（`files.autoGuessEncoding`）。仅当 VS Code 已开启 `files.autoGuessEncoding` 时才能启用。"
+        },
         "aiReview.autoCheckpoint": {
           "type": "boolean",
           "default": true,

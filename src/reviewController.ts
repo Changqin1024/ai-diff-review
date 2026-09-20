@@ -20,7 +20,8 @@ import {
   splitKeepEndings,
   stripEol,
 } from './util';
-import { detectEncoding, decodeWith, encodeWith } from './encoding';
+import { decodeWith, encodeWith } from './encoding';
+import { resolveEncoding } from './encodingVSCode';
 
 function sha1(text: string): string {
   return crypto.createHash('sha1').update(text, 'utf8').digest('hex');
@@ -104,7 +105,7 @@ export class ReviewController {
       return { ...base, tooLarge: true, note: '文件过大，已无差异。' };
     }
 
-    const lines = splitKeepEndings(decodeWith(bytes, detectEncoding(bytes))).map(stripEol);
+    const lines = splitKeepEndings(decodeWith(bytes, await resolveEncoding(uri, bytes))).map(stripEol);
     const rows: DisplayRow[] = lines.map((text, index) => ({
       kind: 'context',
       oldLine: index + 1,

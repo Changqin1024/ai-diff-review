@@ -9,6 +9,7 @@ import { AiReviewHoverProvider } from './ui/hoverProvider';
 import { GlobalActionsViewProvider } from './ui/globalActionsView';
 import { SettingsViewProvider } from './ui/settingsView';
 import { getWatchSettings } from './settings';
+import { autoGuessEnabled } from './encodingVSCode';
 
 function keyOf(arg: unknown): string | undefined {
   if (typeof arg === 'string') {
@@ -56,6 +57,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const contentProvider = new AiReviewContentProvider(tracker, store);
   const hoverProvider = new AiReviewHoverProvider(tracker);
   const settingsView = new SettingsViewProvider(controller);
+
+  const enforceReuseEncoding = async (): Promise<void> => {
+    const config = vscode.workspace.getConfiguration('aiReview');
+    if (config.get<boolean>('reuseVSCodeEncoding', false) && !autoGuessEnabled()) {
+      await config.update('reuseVSCodeEncoding', false, vscode.ConfigurationTarget.Workspace);
+      void vscode.window.showInformationMessage(
+        'AI 审查：已关闭“复用 VS Code 编码识别”，因为 files.autoGuessEncoding 未开启。'
+      );
+    }
+  };
 
   /** Real file key behind a native diff tab (either side), if it is ours. */
   const diffTabKey = (input: vscode.TabInputTextDiff): string | undefined => {
@@ -268,6 +279,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         } else {
           controller.scheduleBinaryCleanup();
         }
+      }
+      if (
+        e.affectsConfiguration('aiReview.reuseVSCodeEncoding') ||
+        e.affectsConfiguration('files.autoGuessEncoding')
+      ) {
+        void enforceReuseEncoding();
+        void settingsView.update();
       }
     }),
     vscode.window.onDidChangeActiveTextEditor(() => updateActiveDiffContext())

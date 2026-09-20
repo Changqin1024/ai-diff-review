@@ -2,7 +2,8 @@ import * as vscode from 'vscode';
 import { BaselineStore } from './baselineStore';
 import { FileChange } from './types';
 import { bytesEqual, isProbablyBinary, relativePathOf } from './util';
-import { detectEncoding, decodeWith } from './encoding';
+import { decodeWith } from './encoding';
+import { resolveEncoding } from './encodingVSCode';
 import { getWatchSettings, isExcluded, isIncluded } from './settings';
 
 /**
@@ -178,7 +179,7 @@ export class ChangeTracker implements vscode.Disposable {
     }
 
     const maxBytes = this.maxTextBytes;
-    const change = this.buildChange(key, uri, folder, baselineBytes, currentBytes, maxBytes);
+    const change = await this.buildChange(key, uri, folder, baselineBytes, currentBytes, maxBytes);
     if (!change) {
       this.remove(key);
       return;
@@ -191,14 +192,14 @@ export class ChangeTracker implements vscode.Disposable {
     this._onDidChange.fire();
   }
 
-  private buildChange(
+  private async buildChange(
     key: string,
     uri: vscode.Uri,
     folder: vscode.WorkspaceFolder | undefined,
     baselineBytes: Uint8Array | undefined,
     currentBytes: Uint8Array | undefined,
     maxBytes: number
-  ): FileChange | undefined {
+  ): Promise<FileChange | undefined> {
     const relativePath = relativePathOf(folder, uri);
     if (!baselineBytes && !currentBytes) {
       return undefined;
@@ -224,7 +225,7 @@ export class ChangeTracker implements vscode.Disposable {
     }
     const tooLarge = !isBinary && sample.length > maxBytes;
 
-    const encoding = detectEncoding(sample);
+    const encoding = await resolveEncoding(uri, sample);
     let baseline = '';
     let current = '';
     if (!isBinary && !tooLarge) {

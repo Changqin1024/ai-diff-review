@@ -31,6 +31,8 @@ export interface FileChange {
   isBinary: boolean;
   /** True when the file body is too large to diff hunk by hunk. */
   tooLarge: boolean;
+  /** Detected text encoding of the file (e.g. "utf-8", "gbk"). */
+  encoding: string;
 }
 
 export type DisplayRow =

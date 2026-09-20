@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
 import { BaselineStore } from './baselineStore';
 import { FileChange } from './types';
-import { bytesEqual, decodeText, isProbablyBinary, relativePathOf } from './util';
+import { bytesEqual, isProbablyBinary, relativePathOf } from './util';
+import { detectEncoding, decodeWith } from './encoding';
 import { getWatchSettings, isExcluded, isIncluded } from './settings';
 
 /**
@@ -223,14 +224,15 @@ export class ChangeTracker implements vscode.Disposable {
     }
     const tooLarge = !isBinary && sample.length > maxBytes;
 
+    const encoding = detectEncoding(sample);
     let baseline = '';
     let current = '';
     if (!isBinary && !tooLarge) {
-      baseline = baselineBytes ? decodeText(baselineBytes) : '';
-      current = currentBytes ? decodeText(currentBytes) : '';
+      baseline = baselineBytes ? decodeWith(baselineBytes, encoding) : '';
+      current = currentBytes ? decodeWith(currentBytes, encoding) : '';
     }
 
-    return { key, relativePath, status, baseline, current, isBinary, tooLarge };
+    return { key, relativePath, status, baseline, current, isBinary, tooLarge, encoding };
   }
 
   private sameChange(a: FileChange, b: FileChange): boolean {

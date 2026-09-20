@@ -15,13 +15,12 @@ import { getWatchSettings, invalidatePathCache, isExcluded, isIncluded, matchesE
 import { DisplayRow, FileChange, FileChangeView, PanelFile } from './types';
 import {
   basename,
-  decodeText,
-  encodeText,
   isProbablyBinary,
   relativePathOf,
   splitKeepEndings,
   stripEol,
 } from './util';
+import { detectEncoding, decodeWith, encodeWith } from './encoding';
 
 function sha1(text: string): string {
   return crypto.createHash('sha1').update(text, 'utf8').digest('hex');
@@ -105,7 +104,7 @@ export class ReviewController {
       return { ...base, tooLarge: true, note: '文件过大，已无差异。' };
     }
 
-    const lines = splitKeepEndings(decodeText(bytes)).map(stripEol);
+    const lines = splitKeepEndings(decodeWith(bytes, detectEncoding(bytes))).map(stripEol);
     const rows: DisplayRow[] = lines.map((text, index) => ({
       kind: 'context',
       oldLine: index + 1,
@@ -163,7 +162,7 @@ export class ReviewController {
     if (change.status === 'deleted' && newBaseline === '') {
       await this.store.delete(vscode.Uri.parse(change.key));
     } else {
-      await this.store.write(vscode.Uri.parse(change.key), encodeText(newBaseline));
+      await this.store.write(vscode.Uri.parse(change.key), encodeWith(newBaseline, change.encoding));
     }
     await this.tracker.evaluate(vscode.Uri.parse(change.key));
   }
@@ -183,7 +182,7 @@ export class ReviewController {
       await this.store.delete(vscode.Uri.parse(change.key));
     } else {
       await this.tracker.withSelfWrite(vscode.Uri.parse(change.key), () =>
-        vscode.workspace.fs.writeFile(vscode.Uri.parse(change.key), encodeText(newCurrent))
+        vscode.workspace.fs.writeFile(vscode.Uri.parse(change.key), encodeWith(newCurrent, change.encoding))
       );
     }
     await this.tracker.evaluate(vscode.Uri.parse(change.key));
@@ -404,7 +403,7 @@ export class ReviewController {
         if (!source) {
           continue;
         }
-        await this.store.write(vscode.Uri.parse(change.key), encodeText(source.baseline));
+        await this.store.write(vscode.Uri.parse(change.key), encodeWith(source.baseline, change.encoding));
         await this.store.delete(vscode.Uri.parse(source.key));
         byHash.delete(hash);
         moved++;

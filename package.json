@@ -395,7 +395,9 @@
     "package": "vsce package"
   },
   "dependencies": {
-    "diff": "^5.2.0"
+    "diff": "^5.2.0",
+    "iconv-lite": "^0.7.3",
+    "jschardet": "^3.1.4"
   },
   "devDependencies": {
     "@types/diff": "^5.2.1",

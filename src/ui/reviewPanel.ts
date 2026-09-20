@@ -113,7 +113,7 @@ export class ReviewPanel {
       deletions: view.deletions,
       isBinary: view.isBinary,
       tooLarge: view.tooLarge,
-      rows: view.rows,
+      rows: this.controller.getFileRows(view.key),
       pending: true,
       note: '',
     };

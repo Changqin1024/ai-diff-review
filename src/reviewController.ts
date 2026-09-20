@@ -55,13 +55,46 @@ export class ReviewController {
     private readonly store: BaselineStore
   ) {}
 
+  private viewsCache?: { version: number; views: FileChangeView[] };
+  private rowsCacheVersion = -1;
+  private readonly rowsCache = new Map<string, DisplayRow[]>();
+
   getViews(): FileChangeView[] {
-    return this.tracker.all.map((c) => this.toView(c));
+    const version = this.tracker.version;
+    if (this.viewsCache && this.viewsCache.version === version) {
+      return this.viewsCache.views;
+    }
+    const views = this.tracker.all.map((c) => this.toView(c));
+    this.viewsCache = { version, views };
+    return views;
   }
 
   getView(key: string): FileChangeView | undefined {
     const change = this.tracker.getByKey(key);
     return change ? this.toView(change) : undefined;
+  }
+
+  /** Render rows for a single file on demand (only the panel needs them). */
+  getFileRows(key: string): DisplayRow[] {
+    const version = this.tracker.version;
+    if (version !== this.rowsCacheVersion) {
+      this.rowsCache.clear();
+      this.rowsCacheVersion = version;
+    }
+    const cached = this.rowsCache.get(key);
+    if (cached) {
+      return cached;
+    }
+    const change = this.tracker.getByKey(key);
+    let rows: DisplayRow[] = [];
+    if (change && !change.isBinary && !change.tooLarge) {
+      const full = vscode.workspace.getConfiguration('aiReview').get<string>('diffDisplay', 'full') !== 'hunks';
+      rows = full
+        ? buildUnifiedRows(change.baseline, change.current)
+        : buildHunkRows(change.baseline, change.current);
+    }
+    this.rowsCache.set(key, rows);
+    return rows;
   }
 
   /**
@@ -118,12 +151,6 @@ export class ReviewController {
   private toView(change: FileChange): FileChangeView {
     const hasText = !change.isBinary && !change.tooLarge;
     const hunks = hasText ? computeDiff(change.baseline, change.current) : [];
-    const fullFile = vscode.workspace.getConfiguration('aiReview').get<string>('diffDisplay', 'full') !== 'hunks';
-    const rows = hasText
-      ? fullFile
-        ? buildUnifiedRows(change.baseline, change.current)
-        : buildHunkRows(change.baseline, change.current)
-      : [];
     let additions = 0;
     let deletions = 0;
     for (const h of hunks) {
@@ -146,7 +173,6 @@ export class ReviewController {
       isBinary: change.isBinary,
       tooLarge: change.tooLarge,
       hunks,
-      rows,
     };
   }
 
@@ -330,7 +356,7 @@ export class ReviewController {
    *   baseline the newly in-scope files;
    * - remap baselines of renamed/moved files instead of deleting and rebuilding.
    */
-  async reconcile(): Promise<{ pruned: number; remapped: number; rebaselined: boolean }> {
+  async reconcile(rebaseline = true): Promise<{ pruned: number; remapped: number; rebaselined: boolean }> {
     invalidatePathCache();
     const folders = (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath);
     const settings = getWatchSettings();
@@ -343,11 +369,12 @@ export class ReviewController {
     const inScope = (relativePath: string): boolean =>
       isIncluded(relativePath, settings) && !isExcluded(relativePath, settings);
 
+    // First run (no metadata) or a scope/folder change needs a full baseline.
     const scopeChanged =
-      meta !== undefined && (!samePaths(meta.paths, settings.paths) || !samePaths(meta.folders, folders));
+      meta === undefined || !samePaths(meta.paths, settings.paths) || !samePaths(meta.folders, folders);
 
     let pruned = 0;
-    if (scopeChanged) {
+    if (scopeChanged && meta !== undefined) {
       pruned = await this.store.deleteMatching(relativeOf, (relativePath) => !inScope(relativePath));
     }
 
@@ -355,11 +382,12 @@ export class ReviewController {
 
     await this.store.writeMeta({ folders, paths: settings.paths });
 
-    if (scopeChanged) {
+    const rebaselined = scopeChanged && rebaseline;
+    if (rebaselined) {
       await this.createCheckpoint(true);
     }
 
-    return { pruned, remapped, rebaselined: scopeChanged };
+    return { pruned, remapped, rebaselined };
   }
 
   /** Move baselines when files were renamed/moved (git detection, then content hash). */

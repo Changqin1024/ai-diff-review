@@ -5,6 +5,7 @@ import { bytesEqual, isProbablyBinary, relativePathOf } from './util';
 import { decodeWith } from './encoding';
 import { resolveEncoding } from './encodingVSCode';
 import { getWatchSettings, isExcluded, isIncluded } from './settings';
+import { gitStatusPaths, isGitRepo } from './git';
 
 /**
  * Watches the workspace for external file mutations (e.g. an code agent writing
@@ -16,6 +17,9 @@ export class ChangeTracker implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
   private watcher?: vscode.FileSystemWatcher;
 
+  private versionCounter = 0;
+  private readonly repoCache = new Map<string, boolean>();
+
   private readonly _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChange = this._onDidChange.event;
 
@@ -25,6 +29,27 @@ export class ChangeTracker implements vscode.Disposable {
   private structureTimer?: ReturnType<typeof setTimeout>;
 
   constructor(private readonly store: BaselineStore) {}
+
+  /** Monotonic version, bumped on every change. Used to memoise derived views. */
+  get version(): number {
+    return this.versionCounter;
+  }
+
+  private emit(): void {
+    this.versionCounter++;
+    this._onDidChange.fire();
+  }
+
+  private async isRepo(folder: vscode.WorkspaceFolder): Promise<boolean> {
+    const key = folder.uri.fsPath;
+    const cached = this.repoCache.get(key);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const value = await isGitRepo(key);
+    this.repoCache.set(key, value);
+    return value;
+  }
 
   /** Suppress watcher evaluation while this extension is writing to disk. */
   private readonly selfWrites = new Set<string>();
@@ -51,7 +76,7 @@ export class ChangeTracker implements vscode.Disposable {
           void this.refreshAll();
         }
         if (e.affectsConfiguration('aiReview.diffDisplay')) {
-          this._onDidChange.fire();
+          this.emit();
         }
       })
     );
@@ -189,7 +214,7 @@ export class ChangeTracker implements vscode.Disposable {
       return;
     }
     this.changes.set(key, change);
-    this._onDidChange.fire();
+    this.emit();
   }
 
   private async buildChange(
@@ -242,45 +267,65 @@ export class ChangeTracker implements vscode.Disposable {
 
   private remove(key: string): void {
     if (this.changes.delete(key)) {
-      this._onDidChange.fire();
+      this.emit();
     }
   }
 
-  /** Re-evaluate every file in the workspace (and every stored baseline). */
+  /**
+   * Re-evaluate meaningful files. On git repos only files reported by
+   * `git status` (plus currently pending ones) are checked, which keeps large
+   * workspaces fast; otherwise a full scan is used.
+   */
   async refreshAll(): Promise<void> {
     if (!getWatchSettings().enabled) {
       this.clear();
       return;
     }
-    const seen = new Set<string>();
+    const targets = new Set<string>();
+    for (const change of this.changes.values()) {
+      targets.add(change.key);
+    }
+
     const folders = vscode.workspace.workspaceFolders ?? [];
     for (const folder of folders) {
-      let files: vscode.Uri[] = [];
-      try {
-        files = await vscode.workspace.findFiles(new vscode.RelativePattern(folder, '**/*'));
-      } catch {
-        files = [];
+      if (folder.uri.scheme !== 'file') {
+        continue;
       }
-      for (const file of files) {
-        if (this.shouldIgnore(file)) {
-          continue;
+      if (await this.isRepo(folder)) {
+        for (const relative of await gitStatusPaths(folder.uri.fsPath)) {
+          if (relative.startsWith('..')) {
+            continue;
+          }
+          targets.add(vscode.Uri.joinPath(folder.uri, ...relative.split('/')).toString());
         }
-        seen.add(file.toString());
-        await this.evaluate(file);
+      } else {
+        let files: vscode.Uri[] = [];
+        try {
+          files = await vscode.workspace.findFiles(new vscode.RelativePattern(folder, '**/*'));
+        } catch {
+          files = [];
+        }
+        for (const file of files) {
+          targets.add(file.toString());
+        }
       }
     }
-    for (const uri of await this.store.list()) {
-      if (!seen.has(uri.toString()) && !this.shouldIgnore(uri)) {
-        await this.evaluate(uri);
+
+    for (const key of targets) {
+      const uri = vscode.Uri.parse(key);
+      if (this.shouldIgnore(uri)) {
+        this.remove(key);
+        continue;
       }
+      await this.evaluate(uri);
     }
-    this._onDidChange.fire();
+    this.emit();
   }
 
   clear(): void {
     if (this.changes.size > 0) {
       this.changes.clear();
-      this._onDidChange.fire();
+      this.emit();
     }
   }
 }

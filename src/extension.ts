@@ -298,31 +298,29 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const autoCheckpoint = vscode.workspace.getConfiguration('aiReview').get<boolean>('autoCheckpoint', true);
   const watchEnabled = getWatchSettings().enabled;
 
-  await controller.relocateStore();
-
-  const rec = await controller.reconcile();
-  if (rec.pruned > 0 || rec.remapped > 0) {
-    void vscode.window.setStatusBarMessage(
-      `AI 审查：基线已同步（清理 ${rec.pruned}，迁移 ${rec.remapped}）。`,
-      4000
-    );
-  }
-
-  if (watchEnabled && autoCheckpoint && (vscode.workspace.workspaceFolders?.length ?? 0) > 0) {
-    await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Window, title: 'AI 审查：正在记录基线…' },
+  // Everything below can be slow on large workspaces, so run it in the
+  // background: the sidebar, settings and commands stay usable immediately.
+  void vscode.window
+    .withProgress(
+      { location: vscode.ProgressLocation.Window, title: 'AI 审查：正在同步基线…' },
       async () => {
-        await controller.createCheckpoint(true);
+        await controller.relocateStore();
+        const rec = await controller.reconcile(autoCheckpoint);
+        if (rec.pruned > 0 || rec.remapped > 0) {
+          void vscode.window.setStatusBarMessage(
+            `AI 审查：基线已同步（清理 ${rec.pruned}，迁移 ${rec.remapped}）。`,
+            4000
+          );
+        }
+        if (watchEnabled) {
+          await tracker.refreshAll();
+        } else {
+          tracker.clear();
+        }
+        updateStatus();
       }
-    );
-  }
-
-  if (watchEnabled) {
-    await tracker.refreshAll();
-  } else {
-    tracker.clear();
-  }
-  updateStatus();
+    )
+    .then(undefined, (error) => console.error('AI 审查：启动同步失败', error));
 }
 
 export function deactivate(): void {

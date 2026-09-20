@@ -126,8 +126,6 @@ npm run package      # 生成 ai-diff-review-0.1.1.vsix
 code --install-extension ai-diff-review-0.1.1.vsix
 ```
 
-发布到插件市场见 [PUBLISHING.md](./PUBLISHING.md)。
-
 ## 已知限制
 
 - 只追踪工作区内的文件（`file` scheme）。

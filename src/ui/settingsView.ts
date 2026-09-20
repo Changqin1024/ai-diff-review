@@ -42,20 +42,32 @@ export class SettingsViewProvider implements vscode.WebviewViewProvider {
     }
     const config = vscode.workspace.getConfiguration('aiReview');
     const settings = getWatchSettings();
-    const stats = await this.controller.cacheStats();
     void this.view.webview.postMessage({
       type: 'state',
       enabled: settings.enabled,
       paths: settings.paths,
       excludes: settings.exclude,
-      files: stats.files,
-      size: humanSize(stats.bytes),
+      files: -1,
+      size: '',
       cacheDir: (config.get<string>('cacheDir', '') ?? '').trim(),
       trackBinary: config.get<boolean>('trackBinaryFiles', false),
       diffDisplay: config.get<string>('diffDisplay', 'full'),
       autoGuess: autoGuessEnabled(),
       reuseVSCode: config.get<boolean>('reuseVSCodeEncoding', false),
     });
+    void this.refreshStats();
+  }
+
+  /** Cache size is computed asynchronously so the page renders instantly. */
+  private async refreshStats(): Promise<void> {
+    if (!this.view) {
+      return;
+    }
+    const stats = await this.controller.cacheStats();
+    if (!this.view) {
+      return;
+    }
+    void this.view.webview.postMessage({ type: 'stats', files: stats.files, size: humanSize(stats.bytes) });
   }
 
   private async updateSetting(key: string, value: unknown): Promise<void> {
@@ -417,7 +429,7 @@ export class SettingsViewProvider implements vscode.WebviewViewProvider {
       enabledEl.checked = !!state.enabled;
       renderChips(pathsEl, state.paths, 'removePath', '整个工作区');
       renderChips(excludesEl, state.excludes, 'removeExclude', '无');
-      cacheInfoEl.textContent = state.files + ' 个文件 · ' + state.size;
+      cacheInfoEl.textContent = state.files < 0 ? '计算中…' : state.files + ' 个文件 · ' + state.size;
       cacheDirEl.textContent = state.cacheDir ? state.cacheDir : '扩展默认存储';
       cacheDirEl.title = state.cacheDir || '扩展默认存储';
       trackBinaryEl.checked = !!state.trackBinary;
@@ -447,7 +459,11 @@ export class SettingsViewProvider implements vscode.WebviewViewProvider {
         vscode.postMessage({ type: btn.dataset.action, value: btn.dataset.value });
       }
     });
-    window.addEventListener('message', (e) => { if (e.data && e.data.type === 'state') render(e.data); });
+    window.addEventListener('message', (e) => {
+      if (!e.data) return;
+      if (e.data.type === 'state') render(e.data);
+      else if (e.data.type === 'stats') cacheInfoEl.textContent = e.data.files + ' 个文件 · ' + e.data.size;
+    });
     vscode.postMessage({ type: 'ready' });
   </script>
 </body>

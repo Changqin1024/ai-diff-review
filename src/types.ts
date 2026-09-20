@@ -52,8 +52,6 @@ export interface FileChangeView {
   isBinary: boolean;
   tooLarge: boolean;
   hunks: DiffHunk[];
-  /** Whole working file (with removed lines interleaved) as renderable rows. */
-  rows: DisplayRow[];
 }
 
 /**

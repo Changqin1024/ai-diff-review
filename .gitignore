@@ -3,5 +3,6 @@ out/
 dist/
 *.vsix
 .vscode-test/
-testWorkspace/.vscode/
-testWorkspace/testdir/
+testWorkspace/
+PUBLISHING.md
+scripts/

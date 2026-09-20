@@ -29,9 +29,9 @@ npx vsce publish                # 打包并发布
 ## 3. 发布更新
 
 ```bash
-npx vsce publish patch   # 0.1.0 -> 0.1.1 并发布
-npx vsce publish minor   # 0.1.0 -> 0.2.0
-npx vsce publish major   # 0.1.0 -> 1.0.0
+npx vsce publish patch   # 0.1.1 -> 0.1.2 并发布
+npx vsce publish minor   # 0.1.1 -> 0.2.0
+npx vsce publish major   # 0.1.1 -> 1.0.0
 npx vsce publish         # 用 package.json 里已改好的 version 发布
 ```
 
@@ -42,8 +42,8 @@ npx vsce publish         # 用 package.json 里已改好的 version 发布
 ```bash
 npx vsce publish --pre-release                         # 发布预发布版本
 npx vsce unpublish <publisher>.<name>                  # 撤销整个扩展
-npx vsce unpublish <publisher>.<name>@0.1.0            # 撤销指定版本
-npx ovsx publish ai-diff-review-0.1.0.vsix -p <TOKEN>  # 发布到 Open VSX（VSCodium 用户）
+npx vsce unpublish <publisher>.<name>@0.1.1            # 撤销指定版本
+npx ovsx publish ai-diff-review-0.1.1.vsix -p <TOKEN>  # 发布到 Open VSX（VSCodium 用户）
 ```
 
 Open VSX token 在 <https://open-vsx.org> 生成。

@@ -2,7 +2,7 @@
   "name": "ai-diff-review",
   "displayName": "AI 审查（AI Diff Review）",
   "description": "对 AI 编码智能体（opencode、Cursor、Claude Code、Trae 等）产生的文件改动进行人工审查：逐块接受、逐块拒绝，或部分应用。",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "changqin",
   "license": "MIT",
   "icon": "media/icon.png",

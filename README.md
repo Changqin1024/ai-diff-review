@@ -122,8 +122,8 @@ npm test             # 运行 VS Code 集成测试
 打包安装：
 
 ```bash
-npm run package      # 生成 ai-diff-review-0.1.0.vsix
-code --install-extension ai-diff-review-0.1.0.vsix
+npm run package      # 生成 ai-diff-review-0.1.1.vsix
+code --install-extension ai-diff-review-0.1.1.vsix
 ```
 
 发布到插件市场见 [PUBLISHING.md](./PUBLISHING.md)。
